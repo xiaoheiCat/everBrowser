@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 # Artificiall Intelligence
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain.messages import HumanMessage, AIMessage, SystemMessage
@@ -48,6 +49,8 @@ class ChatResponse(BaseModel):
 app = FastAPI(title="everBrowser API", version="1.0.0")
 global_agent = None
 global_client = None
+global_session = None
+global_session_manager = None
 system_msg_content = system_msg.content
 
 def show_image(image_path):
@@ -125,21 +128,37 @@ async def main():
             base_url = config["model"]["base_url"]
         )
 
-        tools = await client.get_tools()
-        agent = create_agent(model, tools=tools)
+        # 创建持久的MCP会话
+        session_manager = client.session("everbrowser")
+        session = await session_manager.__aenter__()
+        
+        try:
+            tools = await load_mcp_tools(session)
+            agent = create_agent(model, tools=tools)
 
-        messages = [system_msg]
+            messages = [system_msg]
 
-        for i in range(10):
+            for i in range(10):
+                if image_window and tkinter.Toplevel.winfo_exists(image_window):
+                    image_window.update()
+                    image_window.update_idletasks()
+                await asyncio.sleep(0.5)
+            
+            messages = await agent.ainvoke({"messages": messages + [HumanMessage(content="Open `https://www.justpure.dev/`.")]})
+            
             if image_window and tkinter.Toplevel.winfo_exists(image_window):
-                image_window.update()
-                image_window.update_idletasks()
-            await asyncio.sleep(0.5)
-        
-        messages = await agent.ainvoke({"messages": messages + [HumanMessage(content="Open `https://www.justpure.dev/`.")]})
-        
-        if image_window and tkinter.Toplevel.winfo_exists(image_window):
-            hide_image(image_window)
+                hide_image(image_window)
+            
+            # 保存会话和agent到全局变量
+            global global_agent, global_session, global_session_manager
+            global_agent = agent
+            global_session = session
+            global_session_manager = session_manager
+            
+        except Exception as e:
+            # 确保在出错时也能正确关闭会话
+            await session_manager.__aexit__(type(e), e, e.__traceback__)
+            raise e
             
     except Exception as e:
         if image_window and tkinter.Toplevel.winfo_exists(image_window):
@@ -178,21 +197,24 @@ async def main():
         allow_headers=["*"],
     )
 
-    # Store agent and client globally for API access
-    global global_agent, global_client
-    global_agent = agent
+    # Store client globally for API access
+    global global_client
     global_client = client
 
     async def stream_agent_response(message: str, session_id: str = "default") -> AsyncGenerator[str, None]:
-        """优化的流式生成 Agent 响应 - 使用多种流式模式"""
+        """优化的流式生成 Agent 响应 - 使用多种流式模式和状态化MCP工具"""
         try:
+            # 确保会话处于活动状态
+            if not global_session:
+                raise Exception("MCP会话未初始化")
+            
             # 构建消息列表
             chat_messages = [SystemMessage(content=system_msg_content), HumanMessage(content=message)]
 
             # 发送开始标记
             yield f"data: {json.dumps({'type': 'start', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
 
-            # 使用多种流式模式获取更丰富的信息
+            # 使用多种流式模式获取更丰富的信息，通过状态化会话
             async for stream_mode, chunk in global_agent.astream(
                 {"messages": chat_messages},
                 stream_mode=["messages", "updates"]
@@ -277,16 +299,20 @@ async def main():
 
     @app.post("/chat", response_model=ChatResponse)
     async def chat(request: ChatRequest):
-        """普通聊天接口（非流式）"""
+        """普通聊天接口（非流式）- 使用状态化MCP工具"""
         try:
+            # 确保会话处于活动状态
+            if not global_session:
+                raise Exception("MCP会话未初始化")
+            
             chat_messages = [SystemMessage(content=system_msg_content), HumanMessage(content=request.message)]
             response = await global_agent.ainvoke({"messages": chat_messages})
 
             if response and 'messages' in response:
                 ai_message = response['messages'][-1]
-                content = ai_message.content if hasattr(ai_message, 'content') else "抱歉，我无法处理您的请求。"
+                content = ai_message.content if hasattr(ai_message, 'content') else "抱歉，我现在无法处理您的请求。"
             else:
-                content = "抱歉，我无法处理您的请求。"
+                content = "抱歉，我现在无法处理您的请求。"
 
             return ChatResponse(
                 content=content,
@@ -316,7 +342,9 @@ async def main():
             "status": "healthy",
             "service": "everBrowser API",
             "timestamp": time.time(),
-            "agent_ready": global_agent is not None
+            "agent_ready": global_agent is not None,
+            "session_active": global_session is not None,
+            "mcp_tools_ready": global_session is not None and global_agent is not None
         }
 
     @app.get("/")
