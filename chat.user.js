@@ -680,7 +680,7 @@
     async function streamChat(message, messageId) {
         isStreaming = true;
         let fullContent = '';
-        let toolCalls = [];
+
 
         try {
             const response = await fetch(`${API_BASE_URL}/chat/stream`, {
@@ -722,21 +722,6 @@
                                     fullContent += data.content;
                                     updateMessageContent(messageId, formatContent(fullContent));
                                     scrollToBottom();
-                                    break;
-
-                                case 'tool_call_start':
-                                case 'tool_call_complete':
-                                    const toolCall = {
-                                        name: data.tool_name,
-                                        args: data.tool_args || {},
-                                        id: data.tool_call_id || Date.now()
-                                    };
-                                    toolCalls.push(toolCall);
-                                    updateMessageWithTools(messageId, fullContent, toolCalls);
-                                    break;
-
-                                case 'tool_result':
-                                    updateStatus(`执行: ${data.tool_name}`, 'warning');
                                     break;
 
                                 case 'end':
@@ -816,28 +801,7 @@
         }
     }
 
-    // Update Message with Tools
-    function updateMessageWithTools(messageId, content, toolCalls) {
-        let html = formatContent(content);
 
-        if (toolCalls.length > 0) {
-            html += '<div style="margin-top: 8px;">';
-            for (const tool of toolCalls) {
-                html += `
-                    <div class="eb-tool-call">
-                        <div class="eb-tool-header">
-                            <span>🔧</span>
-                            <span>调用工具: ${tool.name}</span>
-                        </div>
-                        <div class="eb-tool-body">${JSON.stringify(tool.args, null, 2)}</div>
-                    </div>
-                `;
-            }
-            html += '</div>';
-        }
-
-        updateMessageContent(messageId, html);
-    }
 
     // Format Content
     function formatContent(content) {

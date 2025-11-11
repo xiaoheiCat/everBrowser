@@ -236,34 +236,7 @@ blockquote {
     color: var(--text-primary);
 }
 
-/* Tool Call */
-.tool-call {
-    background: rgba(224, 123, 57, 0.08);
-    border: 1px solid rgba(224, 123, 57, 0.25);
-    border-radius: 10px;
-    padding: 12px;
-    margin-top: 12px;
-    font-size: 13px;
-    font-family: var(--font-sans);
-}
 
-.tool-header {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    color: var(--accent-primary);
-    font-weight: 600;
-    margin-bottom: 8px;
-}
-
-.tool-body {
-    color: var(--text-secondary);
-    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 12px;
-    white-space: pre-wrap;
-    word-break: break-all;
-    line-height: 1.5;
-}
 
 /* Typing Indicator */
 .typing {

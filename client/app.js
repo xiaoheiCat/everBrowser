@@ -111,7 +111,6 @@ async function sendMessage() {
 async function streamChat(message, messageId) {
     isStreaming = true;
     let fullContent = '';
-    let toolCalls = [];
 
     try {
         const response = await fetch(`${API_BASE_URL}/chat/stream`, {
@@ -153,20 +152,6 @@ async function streamChat(message, messageId) {
                                 fullContent += data.content;
                                 updateMessageContent(messageId, formatContent(fullContent));
                                 scrollToBottom();
-                                break;
-
-                            case 'tool_call':
-                                const toolCall = {
-                                    name: data.tool_name,
-                                    args: data.tool_args || {},
-                                    id: data.tool_call_id || generateMessageId('tool')
-                                };
-                                toolCalls.push(toolCall);
-                                updateMessageWithTools(messageId, fullContent, toolCalls);
-                                break;
-
-                            case 'tool_result':
-                                updateStatus(`执行: ${data.tool_name}`, 'warning');
                                 break;
 
                             case 'end':
@@ -247,28 +232,7 @@ function updateMessageContent(messageId, content) {
     }
 }
 
-// Update Message with Tools
-function updateMessageWithTools(messageId, content, toolCalls) {
-    let html = formatContent(content);
 
-    if (toolCalls.length > 0) {
-        html += '<div style="margin-top: 12px;">';
-        for (const tool of toolCalls) {
-            html += `
-                <div class="tool-call">
-                    <div class="tool-header">
-                        <span>🔧</span>
-                        <span>调用工具: ${tool.name}</span>
-                    </div>
-                    <div class="tool-body">${JSON.stringify(tool.args, null, 2)}</div>
-                </div>
-            `;
-        }
-        html += '</div>';
-    }
-
-    updateMessageContent(messageId, html);
-}
 
 // Format Content
 function formatContent(content) {

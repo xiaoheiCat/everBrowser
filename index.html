@@ -333,15 +333,6 @@
                         addStreamingMessage(data.content);
                     }
                     break;
-                case 'tool_call':
-                    addStreamingMessage(`\n🔧 调用工具: ${data.tool_name}\n`);
-                    if (data.tool_args && Object.keys(data.tool_args).length > 0) {
-                        addStreamingMessage(`   参数: ${JSON.stringify(data.tool_args, null, 2)}\n`);
-                    }
-                    break;
-                case 'tool_result':
-                    addStreamingMessage(`\n✅ 工具结果: ${data.content.substring(0, 100)}${data.content.length > 100 ? '...' : ''}\n`);
-                    break;
                 case 'end':
                     console.log('响应完成');
                     addStreamingMessage('\n'); // 添加换行

@@ -396,6 +396,9 @@ async def main():
                                         content = content.replace('<think>', '> ')
                                         content = content.replace('</think>', '')
                                         
+                                        # 添加调试信息 - 记录每个token
+                                        print(f"[DEBUG] Processing token: {content[:50]}{'...' if len(content) > 50 else ''}")
+                                        
                                         chunk_data = {
                                             'type': 'token',
                                             'content': content,
@@ -405,17 +408,10 @@ async def main():
                                         yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
                                         last_content = content
                             
-                            # 处理工具调用
+                            # 处理工具调用 - 静默处理，不发送给客户端
                             if hasattr(ai_message_chunk, 'tool_calls') and ai_message_chunk.tool_calls:
-                                for tool_call in ai_message_chunk.tool_calls:
-                                    tool_data = {
-                                        'type': 'tool_call',
-                                        'tool_name': tool_call.get('name', 'unknown'),
-                                        'tool_args': tool_call.get('args', {}),
-                                        'session_id': session_id,
-                                        'timestamp': time.time()
-                                    }
-                                    yield f"data: {json.dumps(tool_data, ensure_ascii=False)}\n\n"
+                                # 工具调用信息不发送给客户端，保持静默处理
+                                pass
                 
                 # 也可能是直接的 AIMessage 对象（向后兼容）
                 elif hasattr(chunk, 'content') and chunk.content:
