@@ -238,8 +238,15 @@ function updateMessageContent(messageId, content) {
 function formatContent(content) {
     if (!content) return '';
 
-    // 处理引用格式（> 开头的行）
-    content = content.replace(/^>\s*(.*)$/gm, '<blockquote>$1</blockquote>');
+    // 处理分隔线（---）
+    content = content.replace(/^---$/gm, '<hr class="think-divider">');
+    
+    // 处理引用格式（> 开头的行）- 将多行引用合并为一个blockquote
+    content = content.replace(/^> .*(?:\n> .*)*/gm, function(match) {
+        // 移除每行的 > 前缀，并将多行内容合并
+        const cleanContent = match.replace(/^> /gm, '');
+        return '<blockquote>' + cleanContent + '</blockquote>';
+    });
     
     // Simple markdown-like formatting
     content = content

@@ -371,6 +371,8 @@ async def main():
 
             # 使用更智能的流式处理
             last_content = ""  # 避免重复发送相同内容
+            tool_call_active = False  # 跟踪是否有活跃的工具调用
+            skip_next_token = False   # 标记是否需要跳过下一个token
             
             async for chunk in global_agent.astream(
                 {"messages": chat_messages},
@@ -392,9 +394,45 @@ async def main():
                                 if content != last_content:
                                     # 过滤掉代码块标签，但保留 think 标签内的内容
                                     if not content.strip().startswith('```') and not content.strip().startswith('</'):
-                                        # 将 <think> 标签转换为 Markdown 引用格式
-                                        content = content.replace('<think>', '> ')
-                                        content = content.replace('</think>', '')
+                                        # 检查是否需要跳过这个token（工具调用后的第一个token）
+                                        if skip_next_token:
+                                            print(f"[DEBUG] Skipping tool return token: {content[:50]}{'...' if len(content) > 50 else ''}")
+                                            skip_next_token = False
+                                            last_content = content  # 更新last_content避免重复处理
+                                            continue
+                                        
+                                        # 处理 <think> 标签 - 在每行开始前添加 >，并移除标签本身
+                                        if '<think>' in content and '</think>' in content:
+                                            # 完整标签的情况
+                                            think_start = content.find('<think>')
+                                            think_end = content.find('</think>') + 8  # </think> 的长度
+                                            
+                                            before_think = content[:think_start]
+                                            think_content = content[think_start + 7:think_end - 8]  # 移除标签
+                                            after_think = content[think_end:]
+                                            
+                                            # 为 think 内容每行添加 > 前缀，跳过空行
+                                            quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
+                                            
+                                            content = before_think + '\n' + quoted_think + '\n---\n' + after_think
+                                        elif '<think>' in content:
+                                            # 只有开始标签的情况
+                                            before_think = content.split('<think>')[0]
+                                            think_content = content.split('<think>')[1]
+                                            
+                                            # 为 think 内容每行添加 > 前缀，跳过空行
+                                            quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
+                                            
+                                            content = before_think + '\n' + quoted_think
+                                        elif '</think>' in content:
+                                            # 只有结束标签的情况
+                                            think_content = content.split('</think>')[0]
+                                            after_think = content.split('</think>')[1]
+                                            
+                                            # 为 think 内容每行添加 > 前缀，跳过空行
+                                            quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
+                                            
+                                            content = quoted_think + '\n---\n' + after_think
                                         
                                         # 添加调试信息 - 记录每个token
                                         print(f"[DEBUG] Processing token: {content[:50]}{'...' if len(content) > 50 else ''}")
@@ -411,6 +449,9 @@ async def main():
                             # 处理工具调用 - 静默处理，不发送给客户端
                             if hasattr(ai_message_chunk, 'tool_calls') and ai_message_chunk.tool_calls:
                                 # 工具调用信息不发送给客户端，保持静默处理
+                                print(f"[DEBUG] Tool call detected but not sent to client: {ai_message_chunk.tool_calls}")
+                                # 设置标记，跳过工具调用后的第一个token（通常是工具返回结果）
+                                skip_next_token = True
                                 pass
                 
                 # 也可能是直接的 AIMessage 对象（向后兼容）
@@ -418,9 +459,48 @@ async def main():
                     content = str(chunk.content)
                     if content != last_content:
                         if not content.strip().startswith('```') and not content.strip().startswith('</'):
-                            # 将 <think> 标签转换为 Markdown 引用格式
-                            content = content.replace('<think>', '> ')
-                            content = content.replace('</think>', '')
+                            # 检查是否需要跳过这个token（工具调用后的第一个token）
+                            if skip_next_token:
+                                print(f"[DEBUG] Skipping tool return token (direct): {content[:50]}{'...' if len(content) > 50 else ''}")
+                                skip_next_token = False
+                                last_content = content  # 更新last_content避免重复处理
+                                continue
+                            
+                            # 处理 <think> 标签 - 在每行开始前添加 >，并移除标签本身
+                            if '<think>' in content and '</think>' in content:
+                                # 完整标签的情况
+                                think_start = content.find('<think>')
+                                think_end = content.find('</think>') + 8  # </think> 的长度
+                                
+                                before_think = content[:think_start]
+                                think_content = content[think_start + 7:think_end - 8]  # 移除标签
+                                after_think = content[think_end:]
+                                
+                                # 为 think 内容每行添加 > 前缀，跳过空行
+                                quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
+                                
+                                content = before_think + '\n' + quoted_think + '\n---\n' + after_think
+                            elif '<think>' in content:
+                                # 只有开始标签的情况
+                                before_think = content.split('<think>')[0]
+                                think_content = content.split('<think>')[1]
+                                
+                                # 为 think 内容每行添加 > 前缀，跳过空行
+                                quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
+                                
+                                content = before_think + '\n' + quoted_think
+                            elif '</think>' in content:
+                                # 只有结束标签的情况
+                                think_content = content.split('</think>')[0]
+                                after_think = content.split('</think>')[1]
+                                
+                                # 为 think 内容每行添加 > 前缀，跳过空行
+                                quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
+                                
+                                content = quoted_think + '\n---\n' + after_think
+                            
+                            # 添加调试信息 - 记录每个token
+                            print(f"[DEBUG] Processing token (direct): {content[:50]}{'...' if len(content) > 50 else ''}")
                             
                             chunk_data = {
                                 'type': 'token',

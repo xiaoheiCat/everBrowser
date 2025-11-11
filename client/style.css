@@ -180,6 +180,15 @@ blockquote {
     color: var(--text-secondary);
 }
 
+/* Think 分隔线样式 */
+.think-divider {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent-primary), transparent);
+    margin: 16px 0;
+    width: 100%;
+}
+
 @keyframes fadeIn {
     from {
         opacity: 0;
