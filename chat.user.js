@@ -252,11 +252,6 @@
             animation: eb-fadeIn 0.3s ease;
         }
 
-        /* 隐藏头像 */
-        .eb-avatar {
-            display: none !important;
-        }
-
         @keyframes eb-fadeIn {
             from {
                 opacity: 0;
@@ -266,25 +261,6 @@
                 opacity: 1;
                 transform: translateY(0);
             }
-        }
-
-        .eb-avatar {
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 14px;
-        }
-
-        .eb-user-avatar {
-            background: linear-gradient(135deg, #667eea, #764ba2);
-        }
-
-        .eb-ai-avatar {
-            background: linear-gradient(135deg, #e07b39, #ff8c47);
         }
 
         .eb-message-content {
@@ -797,9 +773,6 @@
         messageDiv.id = messageId;
 
         messageDiv.innerHTML = `
-            <div class="eb-avatar eb-${role}-avatar">
-                ${isUser ? '👤' : '🤖'}
-            </div>
             <div class="eb-message-content" id="${messageId}-content">
                 ${formatContent(content)}
             </div>

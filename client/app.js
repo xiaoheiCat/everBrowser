@@ -204,9 +204,6 @@ function addMessage(role, content, id = null) {
     messageDiv.id = messageId;
 
     messageDiv.innerHTML = `
-        <div class="avatar ${role}-avatar">
-            ${isUser ? '👤' : '🤖'}
-        </div>
         <div class="message-content" id="${messageId}-content">
             ${formatContent(content)}
         </div>
