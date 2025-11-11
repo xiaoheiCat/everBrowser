@@ -420,6 +420,16 @@ blockquote {
     cursor: not-allowed;
 }
 
+/* 停止按钮特殊样式 */
+.send-btn.stop-btn {
+    background: var(--error-color);
+}
+
+.send-btn.stop-btn:hover:not(:disabled) {
+    background: #d32f2f;
+    transform: scale(1.05);
+}
+
 /* Error Message */
 .error {
     background: rgba(244, 67, 54, 0.1);

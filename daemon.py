@@ -127,8 +127,9 @@ system_msg = SystemMessage("""
 
 # API Models
 class ChatRequest(BaseModel):
-    message: str
+    message: str = ""
     session_id: str = "default"
+    messages: list = None  # 支持对话历史格式 - 期望格式: [{"role": "user", "content": "消息内容"}]
 
 class ChatResponse(BaseModel):
     content: str
@@ -372,12 +373,25 @@ async def main():
             # 使用更智能的流式处理
             last_content = ""  # 避免重复发送相同内容
             tool_call_active = False  # 跟踪是否有活跃的工具调用
-            skip_next_token = False   # 标记是否需要跳过下一个token
+            skip_next_content_token = False   # 跳过工具调用后的第一个有内容的token
+            in_think_block = False    # 标记是否在think块中（处理跨chunk的情况）
+            
+            # 添加连接检查
+            connection_alive = True
             
             async for chunk in global_agent.astream(
                 {"messages": chat_messages},
                 stream_mode=["messages"]
             ):
+                # 检查连接是否仍然活跃
+                try:
+                    # 尝试发送一个心跳包来检查连接
+                    yield f"data: {json.dumps({'type': 'ping', 'timestamp': time.time()})}\n\n"
+                except (ConnectionError, BrokenPipeError, GeneratorExit):
+                    print(f"[INFO] Client disconnected, stopping stream for session {session_id}")
+                    connection_alive = False
+                    break
+                
                 # LangChain 的流式响应格式：('messages', (AIMessageChunk(...), metadata_dict))
                 if isinstance(chunk, tuple) and len(chunk) >= 2:
                     # 检查是否是 messages 类型
@@ -394,45 +408,69 @@ async def main():
                                 if content != last_content:
                                     # 过滤掉代码块标签，但保留 think 标签内的内容
                                     if not content.strip().startswith('```') and not content.strip().startswith('</'):
-                                        # 检查是否需要跳过这个token（工具调用后的第一个token）
-                                        if skip_next_token:
+                                        # 检查是否需要跳过这个token（工具调用后的第一个有内容的token）
+                                        if skip_next_content_token:
                                             print(f"[DEBUG] Skipping tool return token: {content[:50]}{'...' if len(content) > 50 else ''}")
-                                            skip_next_token = False
+                                            skip_next_content_token = False
                                             last_content = content  # 更新last_content避免重复处理
                                             continue
                                         
-                                        # 处理 <think> 标签 - 在每行开始前添加 >，并移除标签本身
-                                        if '<think>' in content and '</think>' in content:
-                                            # 完整标签的情况
-                                            think_start = content.find('<think>')
-                                            think_end = content.find('</think>') + 8  # </think> 的长度
-                                            
-                                            before_think = content[:think_start]
-                                            think_content = content[think_start + 7:think_end - 8]  # 移除标签
-                                            after_think = content[think_end:]
-                                            
-                                            # 为 think 内容每行添加 > 前缀，跳过空行
-                                            quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
-                                            
-                                            content = before_think + '\n' + quoted_think + '\n---\n' + after_think
-                                        elif '<think>' in content:
-                                            # 只有开始标签的情况
-                                            before_think = content.split('<think>')[0]
-                                            think_content = content.split('<think>')[1]
-                                            
-                                            # 为 think 内容每行添加 > 前缀，跳过空行
-                                            quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
-                                            
-                                            content = before_think + '\n' + quoted_think
-                                        elif '</think>' in content:
-                                            # 只有结束标签的情况
-                                            think_content = content.split('</think>')[0]
-                                            after_think = content.split('</think>')[1]
-                                            
-                                            # 为 think 内容每行添加 > 前缀，跳过空行
-                                            quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
-                                            
-                                            content = quoted_think + '\n---\n' + after_think
+                                        # 过滤 think 标签对中的内容，不发送给前端
+                                        # 处理流式传输中think标签的各种情况：
+                                        # 需要考虑跨chunk的情况，使用状态变量跟踪
+                                        
+                                        original_content = content
+                                        
+                                        if in_think_block:
+                                            # 当前在think块中，检查是否遇到结束标签
+                                            if '</think>' in content:
+                                                # 找到结束标签，只保留结束标签之后的内容
+                                                think_end = content.find('</think>') + 8
+                                                content = content[think_end:]
+                                                in_think_block = False
+                                                print(f"[DEBUG] 找到think结束标签，保留后续内容: '{content[:50]}{'...' if len(content) > 50 else ''}'")
+                                            else:
+                                                # 仍然在think块中，完全过滤这个chunk
+                                                content = ""
+                                                print(f"[DEBUG] 仍在think块中，完全过滤")
+                                        else:
+                                            # 不在think块中，正常处理
+                                            if '<think>' in content and '</think>' in content:
+                                                # 情况1: 完整标签对 - 完全移除think内容
+                                                think_start = content.find('<think>')
+                                                think_end = content.find('</think>') + 8
+                                                
+                                                before_think = content[:think_start]
+                                                after_think = content[think_end:]
+                                                
+                                                content = before_think + after_think
+                                                print(f"[DEBUG] 过滤完整think标签: '{content[:50]}{'...' if len(content) > 50 else ''}'")
+                                                
+                                            elif '<think>' in content:
+                                                # 情况2: 只有开始标签 - 设置状态并移除开始到末尾
+                                                think_start = content.find('<think>')
+                                                content = content[:think_start]
+                                                in_think_block = True
+                                                print(f"[DEBUG] 找到think开始标签，设置过滤状态: '{content[:50]}{'...' if len(content) > 50 else ''}'")
+                                                
+                                            elif '</think>' in content:
+                                                # 情况3: 只有结束标签（不应该发生，但处理）- 移除开始到结束标签
+                                                think_end = content.find('</think>') + 8
+                                                content = content[think_end:]
+                                                print(f"[DEBUG] 找到单独的think结束标签: '{content[:50]}{'...' if len(content) > 50 else ''}'")
+                                                
+                                            else:
+                                                # 情况4: 没有think标签 - 正常处理
+                                                print(f"[DEBUG] 无think标签: '{content[:50]}{'...' if len(content) > 50 else ''}'")
+                                        
+                                        # 如果过滤后内容为空，跳过这个token
+                                        if not content.strip():
+                                            print(f"[DEBUG] 过滤后内容为空，跳过这个token")
+                                            last_content = original_content  # 更新避免重复处理
+                                            continue
+                                        
+                                        # 去除内容的首尾换行，避免前端显示多余空行
+                                        content = content.strip()
                                         
                                         # 添加调试信息 - 记录每个token
                                         print(f"[DEBUG] Processing token: {content[:50]}{'...' if len(content) > 50 else ''}")
@@ -443,15 +481,20 @@ async def main():
                                             'session_id': session_id,
                                             'timestamp': time.time()
                                         }
-                                        yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                                        try:
+                                            yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                                        except (ConnectionError, BrokenPipeError, GeneratorExit):
+                                            print(f"[INFO] Client disconnected while sending token, stopping stream for session {session_id}")
+                                            connection_alive = False
+                                            break
                                         last_content = content
                             
                             # 处理工具调用 - 静默处理，不发送给客户端
                             if hasattr(ai_message_chunk, 'tool_calls') and ai_message_chunk.tool_calls:
                                 # 工具调用信息不发送给客户端，保持静默处理
                                 print(f"[DEBUG] Tool call detected but not sent to client: {ai_message_chunk.tool_calls}")
-                                # 设置标记，跳过工具调用后的第一个token（通常是工具返回结果）
-                                skip_next_token = True
+                                # 设置标记，跳过工具调用后的第一个有内容的token
+                                skip_next_content_token = True
                                 pass
                 
                 # 也可能是直接的 AIMessage 对象（向后兼容）
@@ -459,45 +502,69 @@ async def main():
                     content = str(chunk.content)
                     if content != last_content:
                         if not content.strip().startswith('```') and not content.strip().startswith('</'):
-                            # 检查是否需要跳过这个token（工具调用后的第一个token）
-                            if skip_next_token:
+                            # 检查是否需要跳过这个token（工具调用后的第一个有内容的token）
+                            if skip_next_content_token:
                                 print(f"[DEBUG] Skipping tool return token (direct): {content[:50]}{'...' if len(content) > 50 else ''}")
-                                skip_next_token = False
+                                skip_next_content_token = False
                                 last_content = content  # 更新last_content避免重复处理
                                 continue
                             
-                            # 处理 <think> 标签 - 在每行开始前添加 >，并移除标签本身
-                            if '<think>' in content and '</think>' in content:
-                                # 完整标签的情况
-                                think_start = content.find('<think>')
-                                think_end = content.find('</think>') + 8  # </think> 的长度
-                                
-                                before_think = content[:think_start]
-                                think_content = content[think_start + 7:think_end - 8]  # 移除标签
-                                after_think = content[think_end:]
-                                
-                                # 为 think 内容每行添加 > 前缀，跳过空行
-                                quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
-                                
-                                content = before_think + '\n' + quoted_think + '\n---\n' + after_think
-                            elif '<think>' in content:
-                                # 只有开始标签的情况
-                                before_think = content.split('<think>')[0]
-                                think_content = content.split('<think>')[1]
-                                
-                                # 为 think 内容每行添加 > 前缀，跳过空行
-                                quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
-                                
-                                content = before_think + '\n' + quoted_think
-                            elif '</think>' in content:
-                                # 只有结束标签的情况
-                                think_content = content.split('</think>')[0]
-                                after_think = content.split('</think>')[1]
-                                
-                                # 为 think 内容每行添加 > 前缀，跳过空行
-                                quoted_think = '\n'.join(['> ' + line for line in think_content.split('\n') if line.strip()])
-                                
-                                content = quoted_think + '\n---\n' + after_think
+                            # 过滤 think 标签对中的内容，不发送给前端
+                            # 处理流式传输中think标签的各种情况：
+                            # 需要考虑跨chunk的情况，使用状态变量跟踪
+                            
+                            original_content = content
+                            
+                            if in_think_block:
+                                # 当前在think块中，检查是否遇到结束标签
+                                if '</think>' in content:
+                                    # 找到结束标签，只保留结束标签之后的内容
+                                    think_end = content.find('</think>') + 8
+                                    content = content[think_end:]
+                                    in_think_block = False
+                                    print(f"[DEBUG] 找到think结束标签(direct)，保留后续内容: '{content[:50]}{'...' if len(content) > 50 else ''}'")
+                                else:
+                                    # 仍然在think块中，完全过滤这个chunk
+                                    content = ""
+                                    print(f"[DEBUG] 仍在think块中(direct)，完全过滤")
+                            else:
+                                # 不在think块中，正常处理
+                                if '<think>' in content and '</think>' in content:
+                                    # 情况1: 完整标签对 - 完全移除think内容
+                                    think_start = content.find('<think>')
+                                    think_end = content.find('</think>') + 8
+                                    
+                                    before_think = content[:think_start]
+                                    after_think = content[think_end:]
+                                    
+                                    content = before_think + after_think
+                                    print(f"[DEBUG] 过滤完整think标签(direct): '{content[:50]}{'...' if len(content) > 50 else ''}'")
+                                    
+                                elif '<think>' in content:
+                                    # 情况2: 只有开始标签 - 设置状态并移除开始到末尾
+                                    think_start = content.find('<think>')
+                                    content = content[:think_start]
+                                    in_think_block = True
+                                    print(f"[DEBUG] 找到think开始标签(direct)，设置过滤状态: '{content[:50]}{'...' if len(content) > 50 else ''}'")
+                                    
+                                elif '</think>' in content:
+                                    # 情况3: 只有结束标签（不应该发生，但处理）- 移除开始到结束标签
+                                    think_end = content.find('</think>') + 8
+                                    content = content[think_end:]
+                                    print(f"[DEBUG] 找到单独的think结束标签(direct): '{content[:50]}{'...' if len(content) > 50 else ''}'")
+                                    
+                                else:
+                                    # 情况4: 没有think标签 - 正常处理
+                                    print(f"[DEBUG] 无think标签(direct): '{content[:50]}{'...' if len(content) > 50 else ''}'")
+                            
+                            # 如果过滤后内容为空，跳过这个token
+                            if not content.strip():
+                                print(f"[DEBUG] 过滤后内容为空(direct)，跳过这个token")
+                                last_content = original_content  # 更新避免重复处理
+                                continue
+                            
+                            # 去除内容的首尾换行，避免前端显示多余空行
+                            content = content.strip()
                             
                             # 添加调试信息 - 记录每个token
                             print(f"[DEBUG] Processing token (direct): {content[:50]}{'...' if len(content) > 50 else ''}")
@@ -508,21 +575,35 @@ async def main():
                                 'session_id': session_id,
                                 'timestamp': time.time()
                             }
-                            yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                            try:
+                                yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                            except (ConnectionError, BrokenPipeError, GeneratorExit):
+                                print(f"[INFO] Client disconnected while sending token (direct), stopping stream for session {session_id}")
+                                connection_alive = False
+                                break
                             last_content = content
 
-            # 发送结束标记
-            yield f"data: {json.dumps({'type': 'end', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
+            # 发送结束标记（仅在连接正常时）
+            if connection_alive:
+                try:
+                    yield f"data: {json.dumps({'type': 'end', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
+                except (ConnectionError, BrokenPipeError, GeneratorExit):
+                    print(f"[INFO] Client disconnected while sending end marker for session {session_id}")
 
         except Exception as e:
-            # 发送错误信息
-            error_data = {
-                'type': 'error',
-                'error': str(e),
-                'session_id': session_id,
-                'timestamp': time.time()
-            }
-            yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+            # 发送错误信息（仅在连接正常时）
+            if connection_alive:
+                error_data = {
+                    'type': 'error',
+                    'error': str(e),
+                    'session_id': session_id,
+                    'timestamp': time.time()
+                }
+                try:
+                    yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+                except (ConnectionError, BrokenPipeError, GeneratorExit):
+                    print(f"[INFO] Client disconnected while sending error for session {session_id}")
+            print(f"[ERROR] Stream error for session {session_id}: {str(e)}")
 
     @app.post("/chat", response_model=ChatResponse)
     async def chat(request: ChatRequest):
@@ -552,8 +633,21 @@ async def main():
     @app.post("/chat/stream")
     async def chat_stream(request: ChatRequest):
         """流式聊天接口"""
+        # 支持对话历史格式
+        if hasattr(request, 'messages') and request.messages:
+            # 如果收到的是对话历史，使用最后一条用户消息
+            last_user_message = None
+            for msg in reversed(request.messages):
+                if msg.get('role') == 'user':
+                    last_user_message = msg.get('content', '')
+                    break
+            message = last_user_message or request.message
+        else:
+            # 兼容旧格式
+            message = request.message
+            
         return StreamingResponse(
-            stream_agent_response(request.message, request.session_id),
+            stream_agent_response(message, request.session_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
