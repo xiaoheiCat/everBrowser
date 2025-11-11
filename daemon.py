@@ -6,6 +6,7 @@ import time
 import asyncio
 import platform
 import threading
+import subprocess
 import psutil
 from playwright.async_api import async_playwright
 from typing import AsyncGenerator
@@ -198,6 +199,57 @@ def hide_image(w):
     if w and tkinter.Toplevel.winfo_exists(w):
         w.destroy()
 
+async def install_playwright_with_flash(image_window):
+    """异步安装 Playwright，在安装过程中让图标闪烁"""
+    # 启动安装进程（非阻塞）
+    process = await asyncio.create_subprocess_shell(
+        "npx playwright install",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    # 在安装过程中让图标闪烁
+    flash_count = 0
+    while True:
+        # 检查进程是否完成
+        if process.returncode is not None:
+            break
+
+        try:
+            # 等待一小段时间，同时检查进程状态
+            await asyncio.wait_for(process.wait(), timeout=1)
+            break  # 进程完成
+        except asyncio.TimeoutError:
+            # 进程还在运行，继续闪烁
+            flash_count += 1
+
+            # 闪烁效果：隐藏 -> 等待 -> 显示 -> 等待
+            if image_window and tkinter.Toplevel.winfo_exists(image_window):
+                # 隐藏
+                image_window.withdraw()
+                await asyncio.sleep(1)
+
+                # 显示
+                if tkinter.Toplevel.winfo_exists(image_window):
+                    image_window.deiconify()
+                    image_window.update()
+                    image_window.update_idletasks()
+
+    # 获取进程输出（用于调试）
+    stdout, stderr = await process.communicate()
+
+    if process.returncode != 0:
+        print(f"⚠️ Playwright 安装错误: {stderr.decode('utf-8', errors='ignore')}")
+
+    # 确保安装完成后窗口恢复显示状态
+    if image_window and tkinter.Toplevel.winfo_exists(image_window):
+        image_window.deiconify()
+        image_window.update()
+        image_window.update_idletasks()
+        await asyncio.sleep(0.3)  # 短暂等待确保窗口完全恢复
+
+    return process.returncode
+
 async def start_server_and_browser(image_window):
     """启动服务器并打开浏览器"""
     # 启动 API 服务器
@@ -264,7 +316,8 @@ async def main():
         with open('config.json', 'r', encoding='utf-8') as config_file:
             config = json.load(config_file)
 
-        os.system("npx playwright install")
+        # 异步安装 Playwright，在安装过程中图标会闪烁
+        await install_playwright_with_flash(image_window)
 
         client = MultiServerMCPClient(
             {
