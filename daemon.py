@@ -1,9 +1,19 @@
 # Core and Utils
+import os
 import json
 import time
 import asyncio
 import platform
 import threading
+from typing import AsyncGenerator
+
+# FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+import uvicorn
+from pydantic import BaseModel
 
 # Artificiall Intelligence
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -23,6 +33,22 @@ system_msg = SystemMessage("""
 遇到不确定的时效性问题，请使用 www.bing.com/search?q=URL%20Encoded%20Search%20Query 或者 cn.bing.com/search?q=URL%20Encoded%20Search%20Query 搜索引擎在互联网上查询。
 始终使用简体中文回复。
 """)
+
+# API Models
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str = "default"
+
+class ChatResponse(BaseModel):
+    content: str
+    session_id: str
+    timestamp: float
+
+# Global variables for agent and messages
+app = FastAPI(title="everBrowser API", version="1.0.0")
+global_agent = None
+global_client = None
+system_msg_content = system_msg.content
 
 def show_image(image_path):
     img = Image.open(image_path)
@@ -78,29 +104,32 @@ async def main():
     print("--- everBrowser Daemon ---")
     image_window, photo_obj = show_image('icon.png')
 
-    with open('config.json', 'r', encoding='utf-8') as config_file:
-        config = json.load(config_file)
-
-    client = MultiServerMCPClient(
-        {
-            "everbrowser": {
-                "transport": "stdio",
-                "command": "npx",
-                "args": ["@playwright/mcp@latest"],
-            }
-        }
-    )
-    model = ChatOpenAI(
-        model = config["model"]["name"],
-        api_key = config["model"]["api_key"],
-        base_url = config["model"]["base_url"]
-    )
-
-    tools = await client.get_tools()
-    agent = create_agent(model, tools=tools)
-
-    messages = [system_msg]
     try:
+        with open('config.json', 'r', encoding='utf-8') as config_file:
+            config = json.load(config_file)
+
+        os.system("npx playwright install chrome")
+
+        client = MultiServerMCPClient(
+            {
+                "everbrowser": {
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["@playwright/mcp@latest"],
+                }
+            }
+        )
+        model = ChatOpenAI(
+            model = config["model"]["name"],
+            api_key = config["model"]["api_key"],
+            base_url = config["model"]["base_url"]
+        )
+
+        tools = await client.get_tools()
+        agent = create_agent(model, tools=tools)
+
+        messages = [system_msg]
+
         for i in range(10):
             if image_window and tkinter.Toplevel.winfo_exists(image_window):
                 image_window.update()
@@ -139,7 +168,234 @@ async def main():
 
     ### Init Finished ###
     messages = [system_msg]
-    # 这里开始将 Agent 中的能力监听 127.0.0.1 作为 API 开放给其他服务
+
+    # Set up CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Store agent and client globally for API access
+    global global_agent, global_client
+    global_agent = agent
+    global_client = client
+
+    async def stream_agent_response(message: str, session_id: str = "default") -> AsyncGenerator[str, None]:
+        """优化的流式生成 Agent 响应 - 使用多种流式模式"""
+        try:
+            # 构建消息列表
+            chat_messages = [SystemMessage(content=system_msg_content), HumanMessage(content=message)]
+
+            # 发送开始标记
+            yield f"data: {json.dumps({'type': 'start', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
+
+            # 使用多种流式模式获取更丰富的信息
+            async for stream_mode, chunk in global_agent.astream(
+                {"messages": chat_messages},
+                stream_mode=["messages", "updates"]
+            ):
+                if stream_mode == "messages":
+                    # 处理令牌级别的流式输出
+                    if hasattr(chunk, 'content_blocks') and chunk.content_blocks:
+                        for block in chunk.content_blocks:
+                            if block.get('type') == 'text' and block.get('text'):
+                                chunk_data = {
+                                    'type': 'token',
+                                    'content': block['text'],
+                                    'session_id': session_id,
+                                    'timestamp': time.time()
+                                }
+                                yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+
+                            elif block.get('type') == 'tool_call':
+                                tool_data = {
+                                    'type': 'tool_call_start',
+                                    'tool_name': block.get('name', 'unknown'),
+                                    'tool_args': block.get('args', {}),
+                                    'session_id': session_id,
+                                    'timestamp': time.time()
+                                }
+                                yield f"data: {json.dumps(tool_data, ensure_ascii=False)}\n\n"
+
+                            elif block.get('type') == 'tool_call_chunk':
+                                # 流式传输工具调用参数
+                                if block.get('args'):
+                                    chunk_data = {
+                                        'type': 'tool_args_chunk',
+                                        'args_chunk': block['args'],
+                                        'session_id': session_id,
+                                        'timestamp': time.time()
+                                    }
+                                    yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+
+                elif stream_mode == "updates":
+                    # 处理步骤级别的更新
+                    for step_name, step_data in chunk.items():
+                        if step_name == "model" and "messages" in step_data:
+                            message = step_data["messages"][-1]
+                            if hasattr(message, 'tool_calls') and message.tool_calls:
+                                # 完整的工具调用信息
+                                for tool_call in message.tool_calls:
+                                    tool_info = {
+                                        'type': 'tool_call_complete',
+                                        'tool_name': tool_call.get('name', 'unknown'),
+                                        'tool_args': tool_call.get('args', {}),
+                                        'tool_call_id': tool_call.get('id', 'unknown'),
+                                        'session_id': session_id,
+                                        'timestamp': time.time()
+                                    }
+                                    yield f"data: {json.dumps(tool_info, ensure_ascii=False)}\n\n"
+
+                        elif step_name == "tools" and "messages" in step_data:
+                            # 工具执行结果
+                            tool_message = step_data["messages"][-1]
+                            if hasattr(tool_message, 'content'):
+                                result_data = {
+                                    'type': 'tool_result',
+                                    'tool_name': getattr(tool_message, 'name', 'unknown'),
+                                    'content': tool_message.content,
+                                    'session_id': session_id,
+                                    'timestamp': time.time()
+                                }
+                                yield f"data: {json.dumps(result_data, ensure_ascii=False)}\n\n"
+
+            # 发送结束标记
+            yield f"data: {json.dumps({'type': 'end', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
+
+        except Exception as e:
+            # 发送错误信息
+            error_data = {
+                'type': 'error',
+                'error': str(e),
+                'session_id': session_id,
+                'timestamp': time.time()
+            }
+            yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+
+    @app.post("/chat", response_model=ChatResponse)
+    async def chat(request: ChatRequest):
+        """普通聊天接口（非流式）"""
+        try:
+            chat_messages = [SystemMessage(content=system_msg_content), HumanMessage(content=request.message)]
+            response = await global_agent.ainvoke({"messages": chat_messages})
+
+            if response and 'messages' in response:
+                ai_message = response['messages'][-1]
+                content = ai_message.content if hasattr(ai_message, 'content') else "抱歉，我无法处理您的请求。"
+            else:
+                content = "抱歉，我无法处理您的请求。"
+
+            return ChatResponse(
+                content=content,
+                session_id=request.session_id,
+                timestamp=time.time()
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/chat/stream")
+    async def chat_stream(request: ChatRequest):
+        """流式聊天接口"""
+        return StreamingResponse(
+            stream_agent_response(request.message, request.session_id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # 禁用 Nginx 缓冲
+            }
+        )
+
+    @app.get("/health")
+    async def health_check():
+        """健康检查接口"""
+        return {
+            "status": "healthy",
+            "service": "everBrowser API",
+            "timestamp": time.time(),
+            "agent_ready": global_agent is not None
+        }
+
+    @app.get("/")
+    async def root():
+        """根路径 - 返回测试页面"""
+        if os.path.exists("index.html"):
+            return FileResponse("index.html")
+        else:
+            return {
+                "message": "everBrowser API Server",
+                "version": "1.0.0",
+                "endpoints": {
+                    "chat": "/chat - 普通聊天接口",
+                    "chat_stream": "/chat/stream - 流式聊天接口",
+                    "health": "/health - 健康检查接口",
+                    "userscript": "/chat.user.js - Tampermonkey 用户脚本",
+                    "docs": "/docs - Swagger API 文档"
+                }
+            }
+
+    @app.get("/api")
+    async def api_info():
+        """API 信息接口"""
+        return {
+            "message": "everBrowser API Server",
+            "version": "1.0.0",
+            "endpoints": {
+                "chat": "/chat - 普通聊天接口",
+                "chat_stream": "/chat/stream - 流式聊天接口",
+                "health": "/health - 健康检查接口",
+                "userscript": "/chat.user.js - Tampermonkey 用户脚本",
+                "docs": "/docs - Swagger API 文档"
+            }
+        }
+
+    @app.get("/chat.user.js")
+    async def get_userscript():
+        """提供 Tampermonkey 用户脚本"""
+        script_path = "chat.user.js"
+        if os.path.exists(script_path):
+            return FileResponse(
+                script_path,
+                media_type="application/javascript",
+                headers={
+                    "Content-Disposition": "inline; filename=chat.user.js",
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0"
+                }
+            )
+        else:
+            raise HTTPException(status_code=404, detail="User script not found")
+
+    # 启动 API 服务器
+    config = uvicorn.Config(
+        app=app,
+        host="127.0.0.1",
+        port=41465,
+        log_level="info"
+    )
+    server = uvicorn.Server(config)
+
+    print("🚀 everBrowser API Server started on http://127.0.0.1:41465")
+    print("📖 API Documentation: http://127.0.0.1:41465/docs")
+    print("💬 Streaming Chat: POST /chat/stream")
+    print("🔍 Health Check: GET /health")
+    print("📜 User Script: http://127.0.0.1:41465/chat.user.js")
+
+    # 在后台运行服务器
+    server_task = asyncio.create_task(server.serve())
+
+    try:
+        # 保持主线程运行
+        while True:
+            await asyncio.sleep(1)
+    except KeyboardInterrupt:
+        print("\n🛑 Shutting down everBrowser API Server...")
+        server.should_exit = True
+        await server_task
     
 
 if __name__ == "__main__":
