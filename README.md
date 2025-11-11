@@ -1,10 +1,10 @@
-# EverBrowser
+# everBrowser
 
-> 让浏览变得更简单、更可靠
+> 让浏览变得更简单
 
 ## 🌟 项目简介
 
-EverBrowser 是一个基于 Chromium 和 Playwright 的轻量级、高性能的 AI Agent 浏览器。
+everBrowser 是一个基于 Chromium 和 Playwright 的轻量级、高性能的 AI Agent 浏览器。
 
 ## ✨ 核心特性
 
@@ -54,7 +54,7 @@ EverBrowser 是一个基于 Chromium 和 Playwright 的轻量级、高性能的 
 
 ### 指示灯
 
-您可能经常在项目中见到 EverBrowser 的[图标](icon.png)。以下是它们的含义：
+您可能经常在项目中见到 everBrowser 的[图标](icon.png)。以下是它们的含义：
 - 常亮的 Ever 图标 + 右下角的“加载中”图标: 服务正在启动
 - 闪烁的 Ever 图标 + 右下角的“加载中”图标: 浏览器正在安装 (仅首次)
 - 闪烁的 Ever 图标 + 右下角的“警告”图标: 启动时遇到了一点问题 (请检查 Node.js 18+ 是否安装、网络是否通畅、配置文件是否设置)
@@ -145,4 +145,4 @@ everBrowser/
 
 ---
 
-*Made with ❤️ by a small but dedicated team*
+*Made with ❤️ by xiaoheiCat*
