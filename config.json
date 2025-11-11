@@ -1,0 +1,7 @@
+{
+  "model": {
+    "name": "your_model_name",
+    "api_key": "your_api_key",
+    "base_url": "your_base_url"
+  }
+}
