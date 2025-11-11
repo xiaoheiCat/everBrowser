@@ -235,7 +235,7 @@
 
         .eb-welcome-title {
             font-size: 18px;
-            font-weight: 600;
+            font-weight: 900;
             margin-bottom: 8px;
             color: #f0f0f0;
         }
@@ -250,6 +250,11 @@
             display: flex;
             gap: 10px;
             animation: eb-fadeIn 0.3s ease;
+        }
+
+        /* 隐藏头像 */
+        .eb-avatar {
+            display: none !important;
         }
 
         @keyframes eb-fadeIn {
@@ -371,6 +376,74 @@
             }
             30% {
                 transform: translateY(-8px);
+                opacity: 1;
+            }
+        }
+
+        /* Code Block Loading Animation */
+        .eb-code-loading {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            padding: 12px;
+            margin: 6px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .eb-code-loading::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            animation: eb-code-loading-shimmer 1.5s infinite;
+        }
+
+        @keyframes eb-code-loading-shimmer {
+            0% {
+                left: -100%;
+            }
+            100% {
+                left: 100%;
+            }
+        }
+
+        .eb-code-loading-dots {
+            display: flex;
+            gap: 5px;
+            justify-content: center;
+            align-items: center;
+            height: 16px;
+        }
+
+        .eb-code-loading-dot {
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: #e07b39;
+            animation: eb-code-loading-dot 1.4s infinite ease-in-out;
+        }
+
+        .eb-code-loading-dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .eb-code-loading-dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes eb-code-loading-dot {
+            0%, 60%, 100% {
+                transform: scale(1);
+                opacity: 0.7;
+            }
+            30% {
+                transform: scale(1.3);
                 opacity: 1;
             }
         }
@@ -743,10 +816,12 @@
         const contentEl = document.getElementById(`${messageId}-content`);
         if (contentEl) {
             contentEl.innerHTML = `
-                <div class="eb-typing">
-                    <div class="eb-typing-dot"></div>
-                    <div class="eb-typing-dot"></div>
-                    <div class="eb-typing-dot"></div>
+                <div class="eb-code-loading">
+                    <div class="eb-code-loading-dots">
+                        <div class="eb-code-loading-dot"></div>
+                        <div class="eb-code-loading-dot"></div>
+                        <div class="eb-code-loading-dot"></div>
+                    </div>
                 </div>
             `;
         }

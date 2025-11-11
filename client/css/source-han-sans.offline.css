@@ -1,0 +1,66 @@
+/* 过时的font定义 */
+@font-face {
+    font-family: "SourceHanSans-Bold";
+    src: url("../fonts/SourceHanSans/SourceHanSans-Bold.otf");
+}
+@font-face {
+    font-family: "SourceHanSans-ExtraLight";
+    src: url("../fonts/SourceHanSans/SourceHanSans-ExtraLight.otf");
+}
+@font-face {
+    font-family: "SourceHanSans-Heavy";
+    src: url("../fonts/SourceHanSans/SourceHanSans-Heavy.otf");
+}
+@font-face {
+    font-family: "SourceHanSans-Light";
+    src: url("../fonts/SourceHanSans/SourceHanSans-Light.otf");
+}
+@font-face {
+    font-family: "SourceHanSans-Medium";
+    src: url("../fonts/SourceHanSans/SourceHanSans-Medium.otf");
+}
+@font-face {
+    font-family: "SourceHanSans-Normal";
+    src: url("../fonts/SourceHanSans/SourceHanSans-Normal.otf");
+}
+@font-face {
+    font-family: "SourceHanSans-Regular";
+    src: url("../fonts/SourceHanSans/SourceHanSans-Regular.otf");
+}
+
+/* v1.2.0新版font定义 */
+@font-face {
+    font-family: "SourceHanSans";
+    font-weight: 200;
+    src: url("../fonts/SourceHanSans/SourceHanSans-ExtraLight.otf");
+}
+@font-face {
+    font-family: "SourceHanSans";
+    font-weight: 300;
+    src: url("../fonts/SourceHanSans/SourceHanSans-Light.otf");
+}
+@font-face {
+    font-family: "SourceHanSans";
+    font-weight: 400;
+    src: url("../fonts/SourceHanSans/SourceHanSans-Normal.otf");
+}
+@font-face {
+    font-family: "SourceHanSans";
+    font-weight: 500;
+    src: url("../fonts/SourceHanSans/SourceHanSans-Regular.otf");
+}
+@font-face {
+    font-family: "SourceHanSans";
+    font-weight: 600;
+    src: url("../fonts/SourceHanSans/SourceHanSans-Medium.otf");
+}
+@font-face {
+    font-family: "SourceHanSans";
+    font-weight: 700;
+    src: url("../fonts/SourceHanSans/SourceHanSans-Bold.otf");
+}
+@font-face {
+    font-family: "SourceHanSans";
+    font-weight: 900;
+    src: url("../fonts/SourceHanSans/SourceHanSans-Heavy.otf");
+}

@@ -1,0 +1,32 @@
+.font-extralight {
+    font-family: "SourceHanSans", Arial, Helvetica, sans-serif;
+    font-weight: 200;
+}
+.font-light {
+    font-family: "SourceHanSans", Arial, Helvetica, sans-serif;
+    font-weight: 300;
+}
+.font-default {
+    font-family: "SourceHanSans", Arial, Helvetica, sans-serif;
+    font-weight: 400;
+}
+.font-normal {
+    font-family: "SourceHanSans", Arial, Helvetica, sans-serif;
+    font-weight: 400;
+}
+.font-regular {
+    font-family: "SourceHanSans", Arial, Helvetica, sans-serif;
+    font-weight: 500;
+}
+.font-medium {
+    font-family: "SourceHanSans", Arial, Helvetica, sans-serif;
+    font-weight: 600;
+}
+.font-bold {
+    font-family: "SourceHanSans", Arial, Helvetica, sans-serif;
+    font-weight: 700;
+}
+.font-heavy {
+    font-family: "SourceHanSans", Arial, Helvetica, sans-serif;
+    font-weight: 900;
+}

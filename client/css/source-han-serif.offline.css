@@ -1,0 +1,66 @@
+/* 过时的font定义 */
+@font-face {
+    font-family: "SourceHanSerif-Bold";
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-Bold.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif-ExtraLight";
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-ExtraLight.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif-Heavy";
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-Heavy.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif-Light";
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-Light.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif-Medium";
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-Medium.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif-SemiBold";
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-SemiBold.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif-Regular";
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-Regular.otf");
+}
+
+/* v1.2.0新版font定义 */
+@font-face {
+    font-family: "SourceHanSerif";
+    font-weight: 200;
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-ExtraLight.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif";
+    font-weight: 300;
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-Light.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif";
+    font-weight: 400;
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-Regular.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif";
+    font-weight: 500;
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-Medium.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif";
+    font-weight: 600;
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-SemiBold.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif";
+    font-weight: 700;
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-Bold.otf");
+}
+@font-face {
+    font-family: "SourceHanSerif";
+    font-weight: 900;
+    src: url("../fonts/SourceHanSerif/SourceHanSerif-Heavy.otf");
+}
