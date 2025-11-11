@@ -357,7 +357,7 @@ async def main():
     await start_server_and_browser(image_window)
 
     async def stream_agent_response(message: str, session_id: str = "default") -> AsyncGenerator[str, None]:
-        """优化的流式生成 Agent 响应 - 使用多种流式模式和状态化MCP工具"""
+        """改进版流式生成 Agent 响应 - 更智能的内容提取"""
         try:
             # 确保会话处于活动状态
             if not global_session:
@@ -369,95 +369,71 @@ async def main():
             # 发送开始标记
             yield f"data: {json.dumps({'type': 'start', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
 
-            # 使用多种流式模式获取更丰富的信息，通过状态化会话
-            async for stream_mode, chunk in global_agent.astream(
+            # 使用更智能的流式处理
+            last_content = ""  # 避免重复发送相同内容
+            
+            async for chunk in global_agent.astream(
                 {"messages": chat_messages},
-                stream_mode=["messages", "updates"]
-            ):                
-                if stream_mode == "messages":
-                    # messages模式返回的是tuple，需要解包
-                    if isinstance(chunk, tuple) and len(chunk) >= 2:
-                        # tuple通常包含 (message_type, message_content)
-                        message_type, message_content = chunk[0], chunk[1]
-                        
-                        # 实际内容在 message_type (AIMessage) 中
-                        if hasattr(message_type, 'content') and message_type.content:
-                            content = message_type.content
-                            if content and not content.strip().startswith('<') and not content.strip().startswith('```'):
-                                # 过滤掉思考过程和工具调用，只保留实际回答内容
-                                if '<think>' not in content and '</think>' not in content:
-                                    chunk_data = {
-                                        'type': 'token',
-                                        'content': str(content),
+                stream_mode=["messages"]
+            ):
+                # LangChain 的流式响应格式：('messages', (AIMessageChunk(...), metadata_dict))
+                if isinstance(chunk, tuple) and len(chunk) >= 2:
+                    # 检查是否是 messages 类型
+                    if chunk[0] == 'messages':
+                        # 获取 AIMessageChunk 对象（元组的第一个元素）
+                        message_data = chunk[1]
+                        if isinstance(message_data, tuple) and len(message_data) >= 1:
+                            ai_message_chunk = message_data[0]
+                            
+                            # 提取内容
+                            if hasattr(ai_message_chunk, 'content') and ai_message_chunk.content:
+                                content = str(ai_message_chunk.content)
+                                # 只发送新增的内容，避免重复
+                                if content != last_content:
+                                    # 过滤掉代码块标签，但保留 think 标签内的内容
+                                    if not content.strip().startswith('```') and not content.strip().startswith('</'):
+                                        # 将 <think> 标签转换为 Markdown 引用格式
+                                        content = content.replace('<think>', '> ')
+                                        content = content.replace('</think>', '')
+                                        
+                                        chunk_data = {
+                                            'type': 'token',
+                                            'content': content,
+                                            'session_id': session_id,
+                                            'timestamp': time.time()
+                                        }
+                                        yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                                        last_content = content
+                            
+                            # 处理工具调用
+                            if hasattr(ai_message_chunk, 'tool_calls') and ai_message_chunk.tool_calls:
+                                for tool_call in ai_message_chunk.tool_calls:
+                                    tool_data = {
+                                        'type': 'tool_call',
+                                        'tool_name': tool_call.get('name', 'unknown'),
+                                        'tool_args': tool_call.get('args', {}),
                                         'session_id': session_id,
                                         'timestamp': time.time()
                                     }
-                                    yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
-                        
-                        # 如果message_content中也有内容，也处理它
-                        if isinstance(message_content, dict) and 'content' in message_content:
-                            content = message_content.get('content', '')
-                            if content:
-                                print(f"Extracted content from dict: {content[:100]}...")
-                                chunk_data = {
-                                    'type': 'token',
-                                    'content': str(content),
-                                    'session_id': session_id,
-                                    'timestamp': time.time()
-                                }
-                                yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
-                        elif hasattr(message_content, 'content') and message_content.content:
-                            print(f"Message content via attribute: {message_content.content[:100]}...")
+                                    yield f"data: {json.dumps(tool_data, ensure_ascii=False)}\n\n"
+                
+                # 也可能是直接的 AIMessage 对象（向后兼容）
+                elif hasattr(chunk, 'content') and chunk.content:
+                    content = str(chunk.content)
+                    if content != last_content:
+                        if not content.strip().startswith('```') and not content.strip().startswith('</'):
+                            # 将 <think> 标签转换为 Markdown 引用格式
+                            content = content.replace('<think>', '> ')
+                            content = content.replace('</think>', '')
+                            
                             chunk_data = {
                                 'type': 'token',
-                                'content': str(message_content.content),
+                                'content': content,
                                 'session_id': session_id,
                                 'timestamp': time.time()
                             }
                             yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
-                        
-                        # 处理工具调用
-                        if hasattr(message_content, 'tool_calls') and message_content.tool_calls:
-                            for tool_call in message_content.tool_calls:
-                                tool_data = {
-                                    'type': 'tool_call_start',
-                                    'tool_name': tool_call.get('name', 'unknown'),
-                                    'tool_args': tool_call.get('args', {}),
-                                    'session_id': session_id,
-                                    'timestamp': time.time()
-                                }
-                                yield f"data: {json.dumps(tool_data, ensure_ascii=False)}\n\n"
-
-                elif stream_mode == "updates":
-                    # 处理步骤级别的更新
-                    for step_name, step_data in chunk.items():
-                        if step_name == "model" and "messages" in step_data:
-                            message = step_data["messages"][-1]
-                            if hasattr(message, 'tool_calls') and message.tool_calls:
-                                # 完整的工具调用信息
-                                for tool_call in message.tool_calls:
-                                    tool_info = {
-                                        'type': 'tool_call_complete',
-                                        'tool_name': tool_call.get('name', 'unknown'),
-                                        'tool_args': tool_call.get('args', {}),
-                                        'tool_call_id': tool_call.get('id', 'unknown'),
-                                        'session_id': session_id,
-                                        'timestamp': time.time()
-                                    }
-                                    yield f"data: {json.dumps(tool_info, ensure_ascii=False)}\n\n"
-
-                        elif step_name == "tools" and "messages" in step_data:
-                            # 工具执行结果
-                            tool_message = step_data["messages"][-1]
-                            if hasattr(tool_message, 'content'):
-                                result_data = {
-                                    'type': 'tool_result',
-                                    'tool_name': getattr(tool_message, 'name', 'unknown'),
-                                    'content': tool_message.content,
-                                    'session_id': session_id,
-                                    'timestamp': time.time()
-                                }
-                                yield f"data: {json.dumps(result_data, ensure_ascii=False)}\n\n"
+                            last_content = content
 
             # 发送结束标记
             yield f"data: {json.dumps({'type': 'end', 'session_id': session_id, 'timestamp': time.time()})}\n\n"

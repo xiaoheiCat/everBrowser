@@ -169,14 +169,20 @@ body {
     flex-direction: row-reverse;
 }
 
-/* 隐藏头像 */
-.avatar {
-    display: none !important;
+/* Blockquote 样式 */
+blockquote {
+    margin: 8px 0;
+    padding: 8px 16px;
+    border-left: 3px solid var(--accent-primary);
+    background: rgba(224, 123, 57, 0.1);
+    border-radius: 0 6px 6px 0;
+    font-style: italic;
+    color: var(--text-secondary);
 }
 
-.message.user-message {
-    margin-left: auto;
-    flex-direction: row-reverse;
+/* 隐藏头像 */
+.avatar {
+    display: none;
 }
 
 @keyframes fadeIn {

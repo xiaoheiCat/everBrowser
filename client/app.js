@@ -2,6 +2,12 @@
 const API_BASE_URL = 'http://127.0.0.1:41465';
 let currentSessionId = 'session_' + Date.now();
 let isStreaming = false;
+let messageCounter = 0;
+
+// Generate unique message ID
+function generateMessageId(role) {
+    return `msg_${role}_${Date.now()}_${++messageCounter}`;
+}
 
 // DOM Elements
 const messagesContainer = document.getElementById('messages');
@@ -83,7 +89,7 @@ async function sendMessage() {
     updateStatus('思考中...', 'warning');
 
     // Add AI message placeholder
-    const aiMessageId = 'msg_' + Date.now();
+    const aiMessageId = generateMessageId('ai');
     addMessage('ai', '', aiMessageId);
     addTypingIndicator(aiMessageId);
 
@@ -149,12 +155,11 @@ async function streamChat(message, messageId) {
                                 scrollToBottom();
                                 break;
 
-                            case 'tool_call_start':
-                            case 'tool_call_complete':
+                            case 'tool_call':
                                 const toolCall = {
                                     name: data.tool_name,
                                     args: data.tool_args || {},
-                                    id: data.tool_call_id || Date.now()
+                                    id: data.tool_call_id || generateMessageId('tool')
                                 };
                                 toolCalls.push(toolCall);
                                 updateMessageWithTools(messageId, fullContent, toolCalls);
@@ -189,8 +194,10 @@ function addMessage(role, content, id = null) {
         welcome.remove();
     }
 
-    const messageId = id || 'msg_' + Date.now();
+    const messageId = id || generateMessageId(role);
     const isUser = role === 'user';
+
+    console.log(`Adding ${role} message with ID: ${messageId}`);
 
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}-message`;
@@ -270,6 +277,9 @@ function updateMessageWithTools(messageId, content, toolCalls) {
 function formatContent(content) {
     if (!content) return '';
 
+    // 处理引用格式（> 开头的行）
+    content = content.replace(/^>\s*(.*)$/gm, '<blockquote>$1</blockquote>');
+    
     // Simple markdown-like formatting
     content = content
         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
