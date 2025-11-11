@@ -11,3 +11,4 @@ wheels/
 
 # User config
 config.json
+everbrowser.lock

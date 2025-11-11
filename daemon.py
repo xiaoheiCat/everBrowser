@@ -1,10 +1,13 @@
 # Core and Utils
 import os
+import sys
 import json
 import time
 import asyncio
 import platform
 import threading
+import psutil
+from playwright.async_api import async_playwright
 from typing import AsyncGenerator
 
 # FastAPI
@@ -25,6 +28,93 @@ from langchain.messages import HumanMessage, AIMessage, SystemMessage
 # Show Image
 import tkinter
 from PIL import Image, ImageTk
+
+# Constants
+LOCK_FILE = "everbrowser.lock"
+CHECK_INTERVAL = 3  # seconds
+
+def check_single_instance():
+    """检查是否已有守护进程在运行"""
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, 'r') as f:
+                pid = int(f.read().strip())
+
+            # 检查该 PID 是否仍在运行
+            if psutil.pid_exists(pid):
+                try:
+                    proc = psutil.Process(pid)
+                    if proc.is_running() and 'python' in proc.name().lower():
+                        print(f"❌ 守护进程已在运行 (PID: {pid})")
+                        return False
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+            # PID 不存在或进程已结束，删除旧的锁文件
+            os.remove(LOCK_FILE)
+        except (ValueError, FileNotFoundError):
+            pass
+
+    # 创建新的锁文件
+    with open(LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+    return True
+
+def cleanup_lock_file():
+    """清理锁文件"""
+    try:
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+    except Exception as e:
+        print(f"⚠️ 清理锁文件失败: {e}")
+
+def find_playwright_browser():
+    """查找最新启动的 Playwright 浏览器进程"""
+    playwright_processes = []
+
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time', 'exe']):
+        try:
+            cmdline = proc.info.get('cmdline', [])
+            exe_path = proc.info.get('exe', '')
+            
+            # 检查可执行文件路径是否包含 playwright
+            if exe_path and 'playwright' in exe_path.lower():
+                # 检查是否是浏览器进程（chrome, chromium, firefox, webkit）
+                name = proc.info.get('name', '').lower()
+                if any(browser in name for browser in ['chrome', 'chromium']):
+                    playwright_processes.append({
+                        'pid': proc.info['pid'],
+                        'name': proc.info['name'],
+                        'exe': exe_path,
+                        'create_time': proc.info['create_time']
+                    })
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+
+    # 按创建时间排序，返回最新的
+    if playwright_processes:
+        playwright_processes.sort(key=lambda x: x['create_time'], reverse=True)
+        return playwright_processes[0]['pid']
+
+    return None
+
+def monitor_browser_process(browser_pid):
+    """监控浏览器进程，如果进程结束则退出守护进程"""
+    print(f"🔍 开始监控浏览器进程 (PID: {browser_pid})")
+
+    try:
+        while True:
+            if not psutil.pid_exists(browser_pid):
+                print(f"\n🛑 浏览器进程已关闭 (PID: {browser_pid})")
+                print("🛑 正在退出守护进程...")
+                cleanup_lock_file()
+                os._exit(0)
+
+            time.sleep(CHECK_INTERVAL)
+    except Exception as e:
+        print(f"⚠️ 监控进程出错: {e}")
+        cleanup_lock_file()
+        os._exit(1)
 
 system_msg = SystemMessage("""
 # 角色
@@ -105,13 +195,18 @@ async def main():
     ### Init started ###
 
     print("--- everBrowser Daemon ---")
-    image_window, photo_obj = show_image('icon.png')
+
+    # 检查单实例
+    if not check_single_instance():
+        sys.exit(1)
+
+    image_window, photo_obj = show_image('starting.png')
 
     try:
         with open('config.json', 'r', encoding='utf-8') as config_file:
             config = json.load(config_file)
 
-        os.system("npx playwright install chrome")
+        os.system("npx playwright install")
 
         client = MultiServerMCPClient(
             {
@@ -144,11 +239,33 @@ async def main():
                     image_window.update_idletasks()
                 await asyncio.sleep(0.5)
             
-            messages = await agent.ainvoke({"messages": messages + [HumanMessage(content="Open `https://www.justpure.dev/`.")]})
-            
+            # messages = await agent.ainvoke({"messages": messages + [HumanMessage(content="Open `https://www.justpure.dev/`.")]})
+            try:
+                if os.name == 'nt':  # Windows
+                    os.system("cmd /c \"start /b npx playwright cr https://www.justpure.dev/ ^& exit\"")
+                else:  # Unix / Linux / macOS
+                    os.system("npx playwright cr https://www.justpure.dev/ &")
+            except Exception as e:
+                raise Exception("初始化错误, 请检查是否安装 Node.js 18+: " + str(e))
+
             if image_window and tkinter.Toplevel.winfo_exists(image_window):
                 hide_image(image_window)
-            
+
+            # 查找并监控浏览器进程 - 持续查找直到找到为止
+            browser_pid = None
+            while browser_pid is None:
+                browser_pid = find_playwright_browser()
+                if browser_pid:
+                    print(f"✅ 找到浏览器进程 (PID: {browser_pid})")
+                    monitor_thread = threading.Thread(
+                        target=monitor_browser_process,
+                        args=(browser_pid,),
+                        daemon=True
+                    )
+                    monitor_thread.start()
+                else:
+                    time.sleep(CHECK_INTERVAL)
+
             # 保存会话和agent到全局变量
             global global_agent, global_session, global_session_manager
             global_agent = agent
@@ -161,16 +278,13 @@ async def main():
             raise e
             
     except Exception as e:
-        if image_window and tkinter.Toplevel.winfo_exists(image_window):
-            hide_image(image_window)
-        
+        try:
+            if image_window and tkinter.Toplevel.winfo_exists(image_window):
+                hide_image(image_window)
+        except:
+            pass
+
         print(f"Error: {e}")
-        
-        fail_window, fail_photo = show_image('fail.png')
-        await asyncio.sleep(1)
-        if fail_window and tkinter.Toplevel.winfo_exists(fail_window):
-            hide_image(fail_window)
-        await asyncio.sleep(1)
 
         fail_window, fail_photo = show_image('fail.png')
         await asyncio.sleep(1)
@@ -182,7 +296,14 @@ async def main():
         await asyncio.sleep(1)
         if fail_window and tkinter.Toplevel.winfo_exists(fail_window):
             hide_image(fail_window)
-        
+        await asyncio.sleep(1)
+
+        fail_window, fail_photo = show_image('fail.png')
+        await asyncio.sleep(1)
+        if fail_window and tkinter.Toplevel.winfo_exists(fail_window):
+            hide_image(fail_window)
+
+        cleanup_lock_file()
         exit(1)
 
     ### Init Finished ###
@@ -422,8 +543,11 @@ async def main():
             await asyncio.sleep(1)
     except KeyboardInterrupt:
         print("\n🛑 Shutting down everBrowser API Server...")
+        cleanup_lock_file()
         server.should_exit = True
         await server_task
+    finally:
+        cleanup_lock_file()
     
 
 if __name__ == "__main__":
