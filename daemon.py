@@ -304,13 +304,13 @@ async def install_playwright_with_flash(image_window):
             flash_count += 1
 
             if is_macos:
-                send_macos_notification("everBrowser", "正在安装 everBrowser 浏览器")
+                send_macos_notification("everBrowser", "正在安装或者更新 everBrowser 浏览器")
                 await asyncio.sleep(1)
-                send_macos_notification("everBrowser", "正在安装 everBrowser 浏览器.")
+                send_macos_notification("everBrowser", "正在安装或者更新 everBrowser 浏览器.")
                 await asyncio.sleep(1)
-                send_macos_notification("everBrowser", "正在安装 everBrowser 浏览器..")
+                send_macos_notification("everBrowser", "正在安装或者更新 everBrowser 浏览器..")
                 await asyncio.sleep(1)
-                send_macos_notification("everBrowser", "正在安装 everBrowser 浏览器...")
+                send_macos_notification("everBrowser", "正在安装或者更新 everBrowser 浏览器...")
 
             # 闪烁效果：隐藏 -> 等待 -> 显示 -> 等待（仅非 macOS）
             if not is_macos and image_window and tkinter.Toplevel.winfo_exists(image_window):
@@ -593,10 +593,13 @@ async def main():
         """检查是否应该停止"""
         return stop_flags.get(session_id, False)
 
-    async def check_task_completion(session_id: str) -> bool:
+    async def check_task_completion(session_id: str) -> str:
         """
         后台检查任务是否完成
-        返回 True 表示任务完成，False 表示需要继续
+        返回值:
+        - "completed": 任务完成
+        - "continue": 任务未完成，需要继续
+        - "userActionRequired": 需要用户操作，停止自动继续
         """
         try:
             # 获取会话历史
@@ -604,65 +607,86 @@ async def main():
 
             # 构建检查消息 - 不添加到历史，只用于检查
             check_messages = history.copy()
-            check_messages.append(HumanMessage(content="当前任务是否完成？只回答 `True` 或者 `False`，不要回答其他内容，也不要废话。"))
+            check_messages.append(HumanMessage(content="""当前任务是否完成？只通过上下文判断，不要调用工具；只回答以下三个选项之一，不要回答其他内容：
+- `True` - 任务已完成
+- `False` - 任务未完成，我应该继续执行
+- `userActionRequired` - 需要用户提供更多信息或进行操作 (例如需要用户登录)"""))
 
             # 使用非流式调用检查
             response = await global_agent.ainvoke({"messages": check_messages})
 
             if response and 'messages' in response:
                 ai_message = response['messages'][-1]
-                content = ai_message.content.strip().lower()
+                content = ai_message.content.strip()
 
-                print(f"[DEBUG] Task completion check response: {content}")
+                # 过滤 <think> 标签
+                import re
+                # 移除所有 <think>...</think> 标签及其内容
+                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+                content = content.strip().lower()
 
-                # 解析回答
-                if 'true' in content or '是' == content or '完成' in content:
-                    return True
+                print(f"[DEBUG] Task completion check response (filtered): {content}")
+
+                # 解析回答 - 优先检查 userActionRequired
+                if 'useractionrequired' in content.replace(' ', '') or '需要用户' in content or '用户操作' in content or '用户提供' in content:
+                    return "userActionRequired"
+                elif 'true' in content or '是' == content or '完成' in content or '已完成' in content:
+                    return "completed"
                 elif 'false' in content or '否' == content or '未完成' in content or '没有' in content:
-                    return False
+                    return "continue"
 
             # 默认认为任务完成（保守策略，避免过度继续）
-            return True
+            return "completed"
         except Exception as e:
             print(f"[ERROR] Task completion check failed: {e}")
-            return True  # 出错时假设任务完成，避免无限循环
+            return "completed"  # 出错时假设任务完成，避免无限循环
 
     async def stream_agent_response(message: str, session_id: str = "default") -> AsyncGenerator[str, None]:
         """改进版流式生成 Agent 响应 - 支持连贯上下文和自动任务完成检查"""
         MAX_AUTO_CONTINUE = 80  # 最多自动继续 80 次
+        MAX_ERROR_RETRY = 80  # 最多连续错误 80 次
 
         # 获取会话锁，确保同一会话的请求串行处理
         lock = get_session_lock(session_id)
 
         async with lock:
-            try:
-                # 确保会话处于活动状态
-                if not global_session:
-                    raise Exception("MCP会话未初始化")
+            error_count = 0  # 错误计数器
 
-                # 重置停止标志
-                set_stop_flag(session_id, False)
+            # 确保会话处于活动状态
+            if not global_session:
+                error_data = {
+                    'type': 'error',
+                    'error': 'MCP会话未初始化',
+                    'session_id': session_id,
+                    'timestamp': time.time()
+                }
+                yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+                return
 
-                # 获取会话历史
-                history = get_session_history(session_id)
+            # 重置停止标志
+            set_stop_flag(session_id, False)
 
-                # 如果历史为空，添加系统消息
-                if not history:
-                    history.append(SystemMessage(content=system_msg_content))
-                    session_histories[session_id] = history
+            # 获取会话历史
+            history = get_session_history(session_id)
 
-                # 添加当前用户消息到历史
-                user_message = HumanMessage(content=message)
-                add_to_history(session_id, user_message)
+            # 如果历史为空，添加系统消息
+            if not history:
+                history.append(SystemMessage(content=system_msg_content))
+                session_histories[session_id] = history
 
-                # 发送开始标记（只发送一次）
-                yield f"data: {json.dumps({'type': 'start', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
+            # 添加当前用户消息到历史
+            user_message = HumanMessage(content=message)
+            add_to_history(session_id, user_message)
 
-                # 循环处理，直到任务完成或达到最大次数
-                continue_count = 0
-                connection_alive = True
+            # 发送开始标记（只发送一次）
+            yield f"data: {json.dumps({'type': 'start', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
 
-                while continue_count <= MAX_AUTO_CONTINUE:
+            # 主循环：处理任务和错误重试
+            continue_count = 0
+            connection_alive = True
+
+            while continue_count <= MAX_AUTO_CONTINUE and error_count < MAX_ERROR_RETRY:
+                try:
                     # 如果用户请求停止，退出循环
                     if should_stop(session_id):
                         print(f"[INFO] Stop requested for session {session_id}")
@@ -785,14 +809,26 @@ async def main():
                         add_to_history(session_id, ai_message)
                         print(f"[INFO] Added AI response to history for session {session_id}")
 
-                        # 后台检查任务是否完成
-                        is_completed = await check_task_completion(session_id)
+                        # 重置错误计数（成功响应后）
+                        error_count = 0
 
-                        if is_completed or continue_count >= MAX_AUTO_CONTINUE:
-                            # 任务完成或达到最大次数，退出循环
-                            print(f"[INFO] Task completed or max retries reached (count: {continue_count})")
+                        # 后台检查任务是否完成
+                        task_status = await check_task_completion(session_id)
+
+                        if task_status == "completed":
+                            # 任务完成，退出循环
+                            print(f"[INFO] Task completed (count: {continue_count})")
                             break
-                        else:
+                        elif task_status == "userActionRequired":
+                            # 需要用户操作，停止自动继续
+                            print(f"[INFO] User action required, stopping auto-continue (count: {continue_count})")
+                            break
+                        elif task_status == "continue":
+                            # 检查是否达到最大次数
+                            if continue_count >= MAX_AUTO_CONTINUE:
+                                print(f"[INFO] Max auto-continue reached ({MAX_AUTO_CONTINUE})")
+                                break
+
                             # 任务未完成，自动继续
                             print(f"[INFO] Task not completed, auto-continuing... ({continue_count + 1}/{MAX_AUTO_CONTINUE})")
                             continue_count += 1
@@ -803,30 +839,73 @@ async def main():
 
                             # 继续下一轮循环
                             continue
+                        else:
+                            # 未知状态，默认完成
+                            print(f"[WARNING] Unknown task status: {task_status}, treating as completed")
+                            break
                     else:
                         # 没有内容，退出循环
                         break
 
-                # 发送结束标记（只在连接正常时发送一次）
-                if connection_alive:
-                    try:
-                        yield f"data: {json.dumps({'type': 'end', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
-                    except (ConnectionError, BrokenPipeError, GeneratorExit):
-                        print(f"[INFO] Client disconnected while sending end marker")
+                except Exception as e:
+                    # 增加错误计数
+                    error_count += 1
+                    print(f"[ERROR] Stream error for session {session_id} (attempt {error_count}/{MAX_ERROR_RETRY}): {str(e)}")
+                    traceback.print_exc()
 
-            except Exception as e:
-                # 发送错误信息
-                error_data = {
-                    'type': 'error',
-                    'error': str(e),
-                    'session_id': session_id,
-                    'timestamp': time.time()
-                }
+                    # 🔧 修复：先保存已经生成的内容到历史记录（如果有的话）
+                    if ai_response_content.strip():
+                        try:
+                            ai_message = AIMessage(content=ai_response_content)
+                            add_to_history(session_id, ai_message)
+                            print(f"[INFO] Saved partial AI response to history before retry ({len(ai_response_content)} chars)")
+                        except Exception as save_error:
+                            print(f"[WARNING] Failed to save partial response: {save_error}")
+
+                    if error_count >= MAX_ERROR_RETRY:
+                        # 达到最大错误次数，报错
+                        print(f"[FATAL] Max error retries reached ({MAX_ERROR_RETRY}), giving up")
+                        error_data = {
+                            'type': 'error',
+                            'error': f"连续错误 {error_count} 次: {str(e)}",
+                            'session_id': session_id,
+                            'timestamp': time.time()
+                        }
+                        try:
+                            yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+                        except (ConnectionError, BrokenPipeError, GeneratorExit):
+                            pass
+                        break
+                    else:
+                        # 未达到最大次数，添加"继续"并重试
+                        print(f"[INFO] Error occurred, adding '继续' to retry... ({error_count}/{MAX_ERROR_RETRY})")
+                        try:
+                            # 尝试添加"继续"到历史
+                            continue_message = HumanMessage(content="继续")
+                            add_to_history(session_id, continue_message)
+                            # 继续循环
+                            continue
+                        except Exception as retry_error:
+                            # 如果添加"继续"也失败了，直接报错
+                            print(f"[FATAL] Failed to add continue message: {retry_error}")
+                            error_data = {
+                                'type': 'error',
+                                'error': f"重试失败: {str(retry_error)}",
+                                'session_id': session_id,
+                                'timestamp': time.time()
+                            }
+                            try:
+                                yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+                            except (ConnectionError, BrokenPipeError, GeneratorExit):
+                                pass
+                            break
+
+            # 发送结束标记（只在连接正常时发送一次）
+            if connection_alive:
                 try:
-                    yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'end', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
                 except (ConnectionError, BrokenPipeError, GeneratorExit):
-                    pass
-                print(f"[ERROR] Stream error for session {session_id}: {str(e)}")
+                    print(f"[INFO] Client disconnected while sending end marker")
 
     @app.post("/chat", response_model=ChatResponse)
     async def chat(request: ChatRequest):
