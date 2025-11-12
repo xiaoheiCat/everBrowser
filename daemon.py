@@ -232,19 +232,61 @@ async def install_playwright_with_flash(image_window):
     is_windows = platform.system() == "Windows"
 
     # 启动安装进程（非阻塞）
-
     if is_windows:
         process = await asyncio.create_subprocess_shell(
             "npx -y playwright install & npx -y playwright install chrome",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-    else:
+    elif is_macos:
         process = await asyncio.create_subprocess_shell(
-            "npx -y playwright install && npx -y playwright install chrome",
+            'osascript -e \'do shell script "npx -y playwright install && npx -y playwright install chrome" with administrator privileges\'',
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
+    else:
+        try:
+            try:
+                # --password 选项会隐藏输入内容
+                result = subprocess.check_output(
+                    ["zenity", "--password", f"--title=权限提升", f"--text=everBrowser 想要安装或者更新浏览器。\n输入密码允许此操作: "],
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+            except subprocess.CalledProcessError:
+                raise Exception("Wrong password")  # 用户取消输入
+            if result.strip():
+                # 使用用户输入的密码执行命令
+                process = await asyncio.create_subprocess_shell(
+                    f'echo "{password}" | sudo -S npx -y playwright install && npx -y playwright install chrome',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    shell=True
+                )
+            else:
+                # 用户取消输入，退出程序
+                raise Exception("Wrong password")  # 请求用户输入密码以进行安装
+        except:
+            try:
+                # --password 选项会隐藏输入内容
+                result = subprocess.check_output(
+                    ["kdialog", "--password", f"--title=权限提升", f"--text=everBrowser 想要安装或者更新浏览器。\n输入密码允许此操作: "],
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+            except subprocess.CalledProcessError:
+                raise Exception("Wrong password")  # 用户取消输入
+            if result.strip():
+                # 使用用户输入的密码执行命令
+                process = await asyncio.create_subprocess_shell(
+                    f'echo "{password}" | sudo -S npx -y playwright install && npx -y playwright install chrome',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    shell=True
+                )
+            else:
+                # 用户取消输入，退出程序
+                raise Exception("Wrong password")  # 请求用户输入密码以进行安装
 
     # 在安装过程中让图标闪烁（仅非 macOS）
     flash_count = 0
@@ -290,7 +332,7 @@ async def install_playwright_with_flash(image_window):
 
     if process.returncode != 0:
         error_msg = stderr.decode('utf-8', errors='ignore')
-        print(f"⚠️ Playwright 安装错误: {error_msg}")
+        raise Exception(f"⚠️ Playwright 安装错误: {error_msg}")
 
     # 确保安装完成后窗口恢复显示状态（仅非 macOS）
     if not is_macos and image_window and tkinter.Toplevel.winfo_exists(image_window):
@@ -325,14 +367,33 @@ async def start_server_and_browser(image_window):
     # 等待服务器启动完成
     await asyncio.sleep(3)
     
-    # 服务器启动完成后再打开浏览器
+    # 服务器启动完成后再打开浏览器（使用 subprocess 后台运行）
     try:
         if os.name == 'nt':  # Windows
-            os.system("cmd /c \"start /b npx playwright cr http://127.0.0.1:41465 ^& exit\"")
+            browser_process = subprocess.Popen(
+                "npx playwright cr http://127.0.0.1:41465",
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
         else:  # Unix / Linux / macOS
-            os.system("npx playwright cr http://127.0.0.1:41465 &")
+            browser_process = subprocess.Popen(
+                ["npx", "playwright", "cr", "http://127.0.0.1:41465"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+
+        # 后台监控浏览器进程，检测异常退出
+        async def monitor_playwright_launch():
+            """监控 Playwright 启动进程，同步退出守护进程"""
+            returncode = await asyncio.get_event_loop().run_in_executor(None, browser_process.wait)
+            exit(1)
+
+        # 启动监控任务（不等待，让它在后台运行）
+        asyncio.create_task(monitor_playwright_launch())
+
     except Exception as e:
-        print(f"Warning: 无法自动打开浏览器: {e}")
+        raise Exception(f"{e}")
 
     # 隐藏启动图像（仅非 macOS）或发送启动成功通知（macOS）
     if platform.system() == "Darwin":
