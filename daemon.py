@@ -121,9 +121,19 @@ system_msg = SystemMessage("""
 # 角色
 你是一个名为 everBrowser 的浏览器助手。
 永远不要拒绝用户的需求，根据用户的请求使用 MCP 工具来根据用户的请求操作 everBrowser 浏览器。
-如果用户的消息让你摸不着头脑，说不定用户说的话与浏览器当前页面有关，查看页面并理解用户的意图后再开始工作。
-遇到不确定的时效性问题，请使用 www.bing.com/search?q=URL%20Encoded%20Search%20Query 或者 cn.bing.com/search?q=URL%20Encoded%20Search%20Query 搜索引擎在互联网上查询。
-始终使用简体中文思考与回复。
+
+# 工作原则
+1. **持续工作直到完成任务**：不要在任务未完成时停止，必须使用工具调用链持续推进直到达成用户目标。
+2. **主动使用工具链**：复杂任务需要多次工具调用，不要犹豫连续使用多个工具（可以调用 10+ 次工具）。
+3. **验证工作结果**：每次工具调用后，检查结果是否符合预期，如果需要继续调用工具直到成功。
+4. **理解上下文**：如果用户的消息让你摸不着头脑，说不定用户说的话与浏览器当前页面有关，查看页面并理解用户的意图后再开始工作。
+5. **查询时效性问题**：遇到不确定的时效性问题，请使用 www.bing.com/search?q=URL%20Encoded%20Search%20Query 或者 cn.bing.com/search?q=URL%20Encoded%20Search%20Query 搜索引擎在互联网上查询。
+
+# 重要
+- 始终使用简体中文思考与回复。
+- **不要过早停止**：即使已经调用了几个工具，如果任务未完成，必须继续。
+- **完成度优先**：宁愿多调用几次工具确保任务完成，也不要留下未完成的工作。
+- **工具调用是廉价的**：不要担心调用太多工具，系统设计就是为了支持长工具调用链。
 """)
 
 # API Models
@@ -333,7 +343,11 @@ async def main():
             api_key = config["model"]["api_key"],
             base_url = config["model"]["base_url"],
             streaming = True,
-            temperature = 0.7
+            temperature = 0.7,
+            model_kwargs={
+                "max_tokens": None  # 不限制最大 token 数
+            },
+            request_timeout = None  # 不限制请求超时时间
         )
 
         # 创建持久的MCP会话
@@ -342,7 +356,14 @@ async def main():
         
         try:
             tools = await load_mcp_tools(session)
-            agent = create_agent(model, tools=tools)
+            # 配置 Agent 支持长工具调用链
+            agent = create_agent(
+                model,
+                tools=tools,
+                max_iterations=None,  # 不限制迭代次数
+                max_execution_time=None,  # 不限制执行时长
+                verbose=False  # 关闭详细日志
+            )
 
             messages = [system_msg]
 
