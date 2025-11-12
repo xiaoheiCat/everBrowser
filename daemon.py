@@ -593,8 +593,44 @@ async def main():
         """检查是否应该停止"""
         return stop_flags.get(session_id, False)
 
+    async def check_task_completion(session_id: str) -> bool:
+        """
+        后台检查任务是否完成
+        返回 True 表示任务完成，False 表示需要继续
+        """
+        try:
+            # 获取会话历史
+            history = get_session_history(session_id)
+
+            # 构建检查消息 - 不添加到历史，只用于检查
+            check_messages = history.copy()
+            check_messages.append(HumanMessage(content="当前任务是否完成？只回答 `True` 或者 `False`，不要回答其他内容，也不要废话。"))
+
+            # 使用非流式调用检查
+            response = await global_agent.ainvoke({"messages": check_messages})
+
+            if response and 'messages' in response:
+                ai_message = response['messages'][-1]
+                content = ai_message.content.strip().lower()
+
+                print(f"[DEBUG] Task completion check response: {content}")
+
+                # 解析回答
+                if 'true' in content or '是' == content or '完成' in content:
+                    return True
+                elif 'false' in content or '否' == content or '未完成' in content or '没有' in content:
+                    return False
+
+            # 默认认为任务完成（保守策略，避免过度继续）
+            return True
+        except Exception as e:
+            print(f"[ERROR] Task completion check failed: {e}")
+            return True  # 出错时假设任务完成，避免无限循环
+
     async def stream_agent_response(message: str, session_id: str = "default") -> AsyncGenerator[str, None]:
-        """改进版流式生成 Agent 响应 - 支持连贯上下文"""
+        """改进版流式生成 Agent 响应 - 支持连贯上下文和自动任务完成检查"""
+        MAX_AUTO_CONTINUE = 80  # 最多自动继续 80 次
+
         # 获取会话锁，确保同一会话的请求串行处理
         lock = get_session_lock(session_id)
 
@@ -619,125 +655,159 @@ async def main():
                 user_message = HumanMessage(content=message)
                 add_to_history(session_id, user_message)
 
-                # 构建完整的消息列表（包含历史上下文）
-                chat_messages = get_session_history(session_id).copy()
-
-                # 发送开始标记
+                # 发送开始标记（只发送一次）
                 yield f"data: {json.dumps({'type': 'start', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
 
-                # 使用更智能的流式处理
-                last_content = ""  # 避免重复发送相同内容
-                tool_call_active = False  # 跟踪是否有活跃的工具调用
-                skip_next_content_token = False   # 跳过工具调用后的第一个有内容的token
-                in_think_block = False    # 标记是否在think块中（处理跨chunk的情况）
-
-                # 添加连接检查和 AI 回复累积
+                # 循环处理，直到任务完成或达到最大次数
+                continue_count = 0
                 connection_alive = True
-                ai_response_content = ""  # 累积 AI 的完整回复
 
-                async for chunk in global_agent.astream(
-                    {"messages": chat_messages},
-                    stream_mode=["messages"]
-                ):
-                    # 检查停止标志
+                while continue_count <= MAX_AUTO_CONTINUE:
+                    # 如果用户请求停止，退出循环
                     if should_stop(session_id):
                         print(f"[INFO] Stop requested for session {session_id}")
                         connection_alive = False
                         break
 
-                    # 检查连接是否仍然活跃
-                    try:
-                        # 尝试发送一个心跳包来检查连接
-                        yield f"data: {json.dumps({'type': 'ping', 'timestamp': time.time()})}\n\n"
-                    except (ConnectionError, BrokenPipeError, GeneratorExit):
-                        print(f"[INFO] Client disconnected, stopping stream for session {session_id}")
-                        connection_alive = False
+                    # 构建完整的消息列表（包含历史上下文）
+                    chat_messages = get_session_history(session_id).copy()
+
+                    # 使用更智能的流式处理
+                    last_content = ""  # 避免重复发送相同内容
+                    tool_call_active = False  # 跟踪是否有活跃的工具调用
+                    skip_next_content_token = False   # 跳过工具调用后的第一个有内容的token
+                    in_think_block = False    # 标记是否在think块中（处理跨chunk的情况）
+                    ai_response_content = ""  # 累积 AI 的完整回复
+
+                    async for chunk in global_agent.astream(
+                        {"messages": chat_messages},
+                        stream_mode=["messages"]
+                    ):
+                        # 检查停止标志
+                        if should_stop(session_id):
+                            print(f"[INFO] Stop requested for session {session_id}")
+                            connection_alive = False
+                            break
+
+                        # 检查连接是否仍然活跃
+                        try:
+                            # 尝试发送一个心跳包来检查连接
+                            yield f"data: {json.dumps({'type': 'ping', 'timestamp': time.time()})}\n\n"
+                        except (ConnectionError, BrokenPipeError, GeneratorExit):
+                            print(f"[INFO] Client disconnected, stopping stream for session {session_id}")
+                            connection_alive = False
+                            break
+
+                        # LangChain 的流式响应格式：('messages', (AIMessageChunk(...), metadata_dict))
+                        if isinstance(chunk, tuple) and len(chunk) >= 2:
+                            # 检查是否是 messages 类型
+                            if chunk[0] == 'messages':
+                                # 获取 AIMessageChunk 对象（元组的第一个元素）
+                                message_data = chunk[1]
+                                if isinstance(message_data, tuple) and len(message_data) >= 1:
+                                    ai_message_chunk = message_data[0]
+
+                                    # 提取内容
+                                    if hasattr(ai_message_chunk, 'content') and ai_message_chunk.content:
+                                        content = str(ai_message_chunk.content)
+
+                                        # 累积 AI 回复内容（用于添加到历史）
+                                        ai_response_content += content
+
+                                        # 只发送新增的内容，避免重复
+                                        if content != last_content:
+                                            # 过滤掉代码块标签
+                                            if not content.strip().startswith('```') and not content.strip().startswith('</'):
+                                                # 检查是否需要跳过这个token（工具调用后的第一个有内容的token）
+                                                if skip_next_content_token:
+                                                    print(f"[DEBUG] Skipping tool return token: {content[:50]}{'...' if len(content) > 50 else ''}")
+                                                    skip_next_content_token = False
+                                                    last_content = content
+                                                    continue
+
+                                                # 过滤 think 标签对中的内容
+                                                original_content = content
+
+                                                if in_think_block:
+                                                    if '</think>' in content:
+                                                        think_end = content.find('</think>') + 8
+                                                        content = content[think_end:]
+                                                        in_think_block = False
+                                                    else:
+                                                        content = ""
+                                                else:
+                                                    if '<think>' in content and '</think>' in content:
+                                                        think_start = content.find('<think>')
+                                                        think_end = content.find('</think>') + 8
+                                                        content = content[:think_start] + content[think_end:]
+                                                    elif '<think>' in content:
+                                                        think_start = content.find('<think>')
+                                                        content = content[:think_start]
+                                                        in_think_block = True
+                                                    elif '</think>' in content:
+                                                        think_end = content.find('</think>') + 8
+                                                        content = content[think_end:]
+
+                                                # 如果过滤后内容为空，跳过这个token
+                                                if not content.strip():
+                                                    last_content = original_content
+                                                    continue
+
+                                                # 去除内容的首尾换行
+                                                content = content.strip()
+
+                                                chunk_data = {
+                                                    'type': 'token',
+                                                    'content': content,
+                                                    'session_id': session_id,
+                                                    'timestamp': time.time()
+                                                }
+                                                try:
+                                                    yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                                                except (ConnectionError, BrokenPipeError, GeneratorExit):
+                                                    print(f"[INFO] Client disconnected while sending token")
+                                                    connection_alive = False
+                                                    break
+                                                last_content = content
+
+                                    # 处理工具调用 - 静默处理
+                                    if hasattr(ai_message_chunk, 'tool_calls') and ai_message_chunk.tool_calls:
+                                        print(f"[DEBUG] Tool call detected: {ai_message_chunk.tool_calls}")
+                                        skip_next_content_token = True
+
+                    # 如果连接断开，退出循环
+                    if not connection_alive:
                         break
 
-                    # LangChain 的流式响应格式：('messages', (AIMessageChunk(...), metadata_dict))
-                    if isinstance(chunk, tuple) and len(chunk) >= 2:
-                        # 检查是否是 messages 类型
-                        if chunk[0] == 'messages':
-                            # 获取 AIMessageChunk 对象（元组的第一个元素）
-                            message_data = chunk[1]
-                            if isinstance(message_data, tuple) and len(message_data) >= 1:
-                                ai_message_chunk = message_data[0]
+                    # 流式响应结束后，将 AI 回复添加到历史
+                    if ai_response_content.strip():
+                        ai_message = AIMessage(content=ai_response_content)
+                        add_to_history(session_id, ai_message)
+                        print(f"[INFO] Added AI response to history for session {session_id}")
 
-                                # 提取内容
-                                if hasattr(ai_message_chunk, 'content') and ai_message_chunk.content:
-                                    content = str(ai_message_chunk.content)
+                        # 后台检查任务是否完成
+                        is_completed = await check_task_completion(session_id)
 
-                                    # 累积 AI 回复内容（用于添加到历史）
-                                    ai_response_content += content
+                        if is_completed or continue_count >= MAX_AUTO_CONTINUE:
+                            # 任务完成或达到最大次数，退出循环
+                            print(f"[INFO] Task completed or max retries reached (count: {continue_count})")
+                            break
+                        else:
+                            # 任务未完成，自动继续
+                            print(f"[INFO] Task not completed, auto-continuing... ({continue_count + 1}/{MAX_AUTO_CONTINUE})")
+                            continue_count += 1
 
-                                    # 只发送新增的内容，避免重复
-                                    if content != last_content:
-                                        # 过滤掉代码块标签
-                                        if not content.strip().startswith('```') and not content.strip().startswith('</'):
-                                            # 检查是否需要跳过这个token（工具调用后的第一个有内容的token）
-                                            if skip_next_content_token:
-                                                print(f"[DEBUG] Skipping tool return token: {content[:50]}{'...' if len(content) > 50 else ''}")
-                                                skip_next_content_token = False
-                                                last_content = content
-                                                continue
+                            # 添加"继续"到历史
+                            continue_message = HumanMessage(content="继续")
+                            add_to_history(session_id, continue_message)
 
-                                            # 过滤 think 标签对中的内容
-                                            original_content = content
+                            # 继续下一轮循环
+                            continue
+                    else:
+                        # 没有内容，退出循环
+                        break
 
-                                            if in_think_block:
-                                                if '</think>' in content:
-                                                    think_end = content.find('</think>') + 8
-                                                    content = content[think_end:]
-                                                    in_think_block = False
-                                                else:
-                                                    content = ""
-                                            else:
-                                                if '<think>' in content and '</think>' in content:
-                                                    think_start = content.find('<think>')
-                                                    think_end = content.find('</think>') + 8
-                                                    content = content[:think_start] + content[think_end:]
-                                                elif '<think>' in content:
-                                                    think_start = content.find('<think>')
-                                                    content = content[:think_start]
-                                                    in_think_block = True
-                                                elif '</think>' in content:
-                                                    think_end = content.find('</think>') + 8
-                                                    content = content[think_end:]
-
-                                            # 如果过滤后内容为空，跳过这个token
-                                            if not content.strip():
-                                                last_content = original_content
-                                                continue
-
-                                            # 去除内容的首尾换行
-                                            content = content.strip()
-
-                                            chunk_data = {
-                                                'type': 'token',
-                                                'content': content,
-                                                'session_id': session_id,
-                                                'timestamp': time.time()
-                                            }
-                                            try:
-                                                yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
-                                            except (ConnectionError, BrokenPipeError, GeneratorExit):
-                                                print(f"[INFO] Client disconnected while sending token")
-                                                connection_alive = False
-                                                break
-                                            last_content = content
-
-                                # 处理工具调用 - 静默处理
-                                if hasattr(ai_message_chunk, 'tool_calls') and ai_message_chunk.tool_calls:
-                                    print(f"[DEBUG] Tool call detected: {ai_message_chunk.tool_calls}")
-                                    skip_next_content_token = True
-
-                # 流式响应结束后，将 AI 回复添加到历史
-                if connection_alive and ai_response_content.strip():
-                    ai_message = AIMessage(content=ai_response_content)
-                    add_to_history(session_id, ai_message)
-                    print(f"[INFO] Added AI response to history for session {session_id}")
-
-                # 发送结束标记（仅在连接正常时）
+                # 发送结束标记（只在连接正常时发送一次）
                 if connection_alive:
                     try:
                         yield f"data: {json.dumps({'type': 'end', 'session_id': session_id, 'timestamp': time.time()})}\n\n"
