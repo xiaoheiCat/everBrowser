@@ -6,6 +6,7 @@ import time
 import asyncio
 import platform
 import threading
+import traceback
 import subprocess
 import psutil
 from playwright.async_api import async_playwright
@@ -161,6 +162,21 @@ session_locks = {}      # {session_id: asyncio.Lock} 用于并发控制
 MAX_HISTORY_LENGTH = 50  # 最大历史消息数量（防止 token 溢出）
 stop_flags = {}         # {session_id: bool} 用于停止生成
 
+def send_macos_notification(title, message, sound=True):
+    """在 macOS 上发送系统通知"""
+    if platform.system() != "Darwin":
+        return
+
+    # 使用 osascript 发送通知
+    sound_arg = "with sound" if sound else ""
+    script = f'''
+    display notification "{message}" with title "{title}" {sound_arg}
+    '''
+    try:
+        subprocess.run(["osascript", "-e", script], check=False, capture_output=True)
+    except Exception as e:
+        print(f"⚠️ 发送通知失败: {e}")
+
 def show_image(image_path):
     img = Image.open(image_path)
     w = tkinter.Tk()
@@ -210,15 +226,27 @@ def hide_image(w):
         w.destroy()
 
 async def install_playwright_with_flash(image_window):
-    """异步安装 Playwright，在安装过程中让图标闪烁"""
-    # 启动安装进程（非阻塞）
-    process = await asyncio.create_subprocess_shell(
-        "npx playwright install",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
+    """异步安装 Playwright，在安装过程中让图标闪烁或发送通知"""
+    # macOS 使用通知，其他系统使用闪烁图标
+    is_macos = platform.system() == "Darwin"
+    is_windows = platform.system() == "Windows"
 
-    # 在安装过程中让图标闪烁
+    # 启动安装进程（非阻塞）
+
+    if is_windows:
+        process = await asyncio.create_subprocess_shell(
+            "npx -y playwright install & npx -y playwright install chrome",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+    else:
+        process = await asyncio.create_subprocess_shell(
+            "npx -y playwright install && npx -y playwright install chrome",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+    # 在安装过程中让图标闪烁（仅非 macOS）
     flash_count = 0
     while True:
         # 检查进程是否完成
@@ -230,11 +258,20 @@ async def install_playwright_with_flash(image_window):
             await asyncio.wait_for(process.wait(), timeout=1)
             break  # 进程完成
         except asyncio.TimeoutError:
-            # 进程还在运行，继续闪烁
+            # 进程还在运行
             flash_count += 1
 
-            # 闪烁效果：隐藏 -> 等待 -> 显示 -> 等待
-            if image_window and tkinter.Toplevel.winfo_exists(image_window):
+            if is_macos:
+                send_macos_notification("everBrowser", "正在安装 everBrowser 浏览器")
+                await asyncio.sleep(1)
+                send_macos_notification("everBrowser", "正在安装 everBrowser 浏览器.")
+                await asyncio.sleep(1)
+                send_macos_notification("everBrowser", "正在安装 everBrowser 浏览器..")
+                await asyncio.sleep(1)
+                send_macos_notification("everBrowser", "正在安装 everBrowser 浏览器...")
+
+            # 闪烁效果：隐藏 -> 等待 -> 显示 -> 等待（仅非 macOS）
+            if not is_macos and image_window and tkinter.Toplevel.winfo_exists(image_window):
                 # 隐藏
                 image_window.withdraw()
                 await asyncio.sleep(1)
@@ -245,14 +282,18 @@ async def install_playwright_with_flash(image_window):
                     image_window.update()
                     image_window.update_idletasks()
 
+    if is_macos:
+        send_macos_notification("everBrowser", "正在启动 everBrowser...", sound=True)
+
     # 获取进程输出（用于调试）
     stdout, stderr = await process.communicate()
 
     if process.returncode != 0:
-        print(f"⚠️ Playwright 安装错误: {stderr.decode('utf-8', errors='ignore')}")
+        error_msg = stderr.decode('utf-8', errors='ignore')
+        print(f"⚠️ Playwright 安装错误: {error_msg}")
 
-    # 确保安装完成后窗口恢复显示状态
-    if image_window and tkinter.Toplevel.winfo_exists(image_window):
+    # 确保安装完成后窗口恢复显示状态（仅非 macOS）
+    if not is_macos and image_window and tkinter.Toplevel.winfo_exists(image_window):
         image_window.deiconify()
         image_window.update()
         image_window.update_idletasks()
@@ -293,7 +334,10 @@ async def start_server_and_browser(image_window):
     except Exception as e:
         print(f"Warning: 无法自动打开浏览器: {e}")
 
-    if image_window and tkinter.Toplevel.winfo_exists(image_window):
+    # 隐藏启动图像（仅非 macOS）或发送启动成功通知（macOS）
+    if platform.system() == "Darwin":
+        send_macos_notification("everBrowser", "everBrowser 已启动！", sound=True)
+    elif image_window and tkinter.Toplevel.winfo_exists(image_window):
         hide_image(image_window)
 
     # 查找并监控浏览器进程 - 持续查找直到找到为止
@@ -320,7 +364,13 @@ async def main():
     if not check_single_instance():
         sys.exit(1)
 
-    image_window, photo_obj = show_image('starting.png')
+    # macOS 使用系统通知，其他系统使用图形界面
+    image_window = None
+    photo_obj = None
+    if platform.system() == "Darwin":
+        send_macos_notification("everBrowser", "正在启动 everBrowser...", sound=True)
+    else:
+        image_window, photo_obj = show_image('starting.png')
 
     try:
         with open('config.json', 'r', encoding='utf-8') as config_file:
@@ -344,9 +394,7 @@ async def main():
             base_url = config["model"]["base_url"],
             streaming = True,
             temperature = 0.7,
-            model_kwargs={
-                "max_tokens": None  # 不限制最大 token 数
-            },
+            max_tokens = None,  # 不限制最大 token 数 - 作为显式参数
             request_timeout = None  # 不限制请求超时时间
         )
 
@@ -360,9 +408,6 @@ async def main():
             agent = create_agent(
                 model,
                 tools=tools,
-                max_iterations=None,  # 不限制迭代次数
-                max_execution_time=None,  # 不限制执行时长
-                verbose=False  # 关闭详细日志
             )
 
             messages = [system_msg]
@@ -393,23 +438,30 @@ async def main():
             pass
 
         print(f"Error: {e}")
+        traceback.print_exc()
 
-        fail_window, fail_photo = show_image('fail.png')
-        await asyncio.sleep(1)
-        if fail_window and tkinter.Toplevel.winfo_exists(fail_window):
-            hide_image(fail_window)
-        await asyncio.sleep(1)
+        # macOS 使用通知，其他系统使用失败图标闪烁
+        if platform.system() == "Darwin":
+            # 发送失败通知
+            send_macos_notification("everBrowser", f"⚠️ 启动失败！", sound=True)
+        else:
+            # 失败图标闪烁 3 次
+            fail_window, fail_photo = show_image('fail.png')
+            await asyncio.sleep(1)
+            if fail_window and tkinter.Toplevel.winfo_exists(fail_window):
+                hide_image(fail_window)
+            await asyncio.sleep(1)
 
-        fail_window, fail_photo = show_image('fail.png')
-        await asyncio.sleep(1)
-        if fail_window and tkinter.Toplevel.winfo_exists(fail_window):
-            hide_image(fail_window)
-        await asyncio.sleep(1)
+            fail_window, fail_photo = show_image('fail.png')
+            await asyncio.sleep(1)
+            if fail_window and tkinter.Toplevel.winfo_exists(fail_window):
+                hide_image(fail_window)
+            await asyncio.sleep(1)
 
-        fail_window, fail_photo = show_image('fail.png')
-        await asyncio.sleep(1)
-        if fail_window and tkinter.Toplevel.winfo_exists(fail_window):
-            hide_image(fail_window)
+            fail_window, fail_photo = show_image('fail.png')
+            await asyncio.sleep(1)
+            if fail_window and tkinter.Toplevel.winfo_exists(fail_window):
+                hide_image(fail_window)
 
         cleanup_lock_file()
         exit(1)
