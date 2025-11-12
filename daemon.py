@@ -735,9 +735,6 @@ async def main():
                                     if hasattr(ai_message_chunk, 'content') and ai_message_chunk.content:
                                         content = str(ai_message_chunk.content)
 
-                                        # 累积 AI 回复内容（用于添加到历史）
-                                        ai_response_content += content
-
                                         # 只发送新增的内容，避免重复
                                         if content != last_content:
                                             # 过滤掉代码块标签
@@ -779,6 +776,9 @@ async def main():
 
                                                 # 去除内容的首尾换行
                                                 content = content.strip()
+
+                                                # 🔧 修复：累积过滤后的内容（实际发送到前端的内容）
+                                                ai_response_content += content + " "
 
                                                 chunk_data = {
                                                     'type': 'token',
@@ -844,7 +844,32 @@ async def main():
                             print(f"[WARNING] Unknown task status: {task_status}, treating as completed")
                             break
                     else:
-                        # 没有内容，退出循环
+                        # 🔧 修复：没有内容发送到前端时，检查是否需要发送说明消息
+                        print(f"[WARNING] No content was sent to frontend (all filtered or empty)")
+
+                        # 仍然检查任务完成状态，可能需要向用户说明情况
+                        task_status = await check_task_completion(session_id)
+
+                        if task_status == "userActionRequired":
+                            # 向前端发送说明消息
+                            explanation = "任务需要您的操作才能继续。"
+                            try:
+                                chunk_data = {
+                                    'type': 'token',
+                                    'content': explanation,
+                                    'session_id': session_id,
+                                    'timestamp': time.time()
+                                }
+                                yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+
+                                # 添加说明消息到历史
+                                ai_message = AIMessage(content=explanation)
+                                add_to_history(session_id, ai_message)
+                                print(f"[INFO] Sent user action required message to frontend")
+                            except (ConnectionError, BrokenPipeError, GeneratorExit):
+                                print(f"[WARNING] Failed to send user action message")
+
+                        # 退出循环
                         break
 
                 except Exception as e:
