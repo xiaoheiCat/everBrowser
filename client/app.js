@@ -16,6 +16,8 @@ const input = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
 const statusEl = document.getElementById('status');
 const statusDot = document.querySelector('.status-dot');
+const warningOverlay = document.getElementById('warningOverlay');
+const confirmBtn = document.getElementById('confirmBtn');
 
 // 用于停止当前请求的 AbortController
 let currentAbortController = null;
@@ -24,8 +26,20 @@ let currentAbortController = null;
 init();
 
 function init() {
+    setupWarningModal();
     setupEventListeners();
     checkHealth();
+}
+
+// Setup Warning Modal
+function setupWarningModal() {
+    if (confirmBtn) {
+        confirmBtn.addEventListener('click', () => {
+            if (warningOverlay) {
+                warningOverlay.style.display = 'none';
+            }
+        });
+    }
 }
 
 // Event Listeners

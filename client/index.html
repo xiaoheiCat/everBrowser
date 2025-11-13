@@ -7,6 +7,21 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+    <!-- 遮罩层与警告弹窗 -->
+    <div id="warningOverlay" class="warning-overlay">
+        <div class="warning-modal">
+            <div class="warning-title">安全提示</div>
+            <div class="warning-content">
+                <p>everBrowser AI 可以阅读 everBrowser 浏览器中打开的所有标签页中的内容,其中可能包含敏感信息。</p>
+                <p>everBrowser 不会存储它们,但您的模型提供商仍然可能存储这些数据以供模型改进与分析。</p>
+                <p>同时,如果 everBrowser AI 读取了不安全的页面,这也可能使它开始执行攻击者的提示词注入攻击命令。</p>
+                <p>在继续之前,请确保您让 everBrowser AI 浏览的网页是安全的,并且详细检查 everBrowser AI 的输出。
+                <p>一旦它的行为变得异常,立即点击「停止」按钮以干预 everBrowser AI 的活动。</p>
+            </div>
+            <button class="warning-confirm-btn" id="confirmBtn">没问题</button>
+        </div>
+    </div>
+
     <div class="container">
         <div class="header">
             <div class="header-left">
