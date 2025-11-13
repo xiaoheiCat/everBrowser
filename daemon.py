@@ -627,13 +627,13 @@ async def main():
 
                 print(f"[DEBUG] Task completion check response (filtered): {content}")
 
-                # 解析回答 - 优先检查 userActionRequired
+                # 解析回答 - 优先检查 userActionRequired，然后先检查 continue（避免"未完成"被"完成"误匹配）
                 if 'useractionrequired' in content.replace(' ', '') or '需要用户' in content or '用户操作' in content or '用户提供' in content:
                     return "userActionRequired"
-                elif 'true' in content or '是' == content or '完成' in content or '已完成' in content:
-                    return "completed"
                 elif 'false' in content or '否' == content or '未完成' in content or '没有' in content:
                     return "continue"
+                elif 'true' in content or '是' == content or '完成' in content or '已完成' in content:
+                    return "completed"
 
             # 默认认为任务完成（保守策略，避免过度继续）
             return "completed"
